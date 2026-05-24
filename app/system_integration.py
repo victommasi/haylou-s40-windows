@@ -28,6 +28,39 @@ def save_config(cfg: dict):
     except Exception:
         pass
 
+# ─── Instância única (impede abrir 2 cópias que brigam pela conexão BLE) ───
+_mutex_handle = None
+def acquire_single_instance(name: str = "HaylouS30ProWindowsApp_SingleInstance") -> bool:
+    """True se esta é a 1ª instância; False se já existe outra rodando.
+    Mutex nomeado do Windows (vive enquanto o processo viver). Em caso de falha
+    na checagem, retorna True pra não travar o app injustamente."""
+    global _mutex_handle
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.windll.kernel32
+        k.CreateMutexW.restype = wintypes.HANDLE
+        k.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        _mutex_handle = k.CreateMutexW(None, True, name)
+        ERROR_ALREADY_EXISTS = 183
+        return k.GetLastError() != ERROR_ALREADY_EXISTS
+    except Exception:
+        return True
+
+def focus_existing_window(title: str = "Haylou S30 Pro") -> bool:
+    """Traz a janela da instância já aberta pra frente (em vez de abrir outra)."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        hwnd = u.FindWindowW(None, title)
+        if hwnd:
+            u.ShowWindow(hwnd, 9)        # SW_RESTORE (desminimiza)
+            u.SetForegroundWindow(hwnd)
+            return True
+    except Exception:
+        pass
+    return False
+
 # ─── Notificação Windows (bateria baixa etc) ───
 def notify(title: str, msg: str):
     """Notificação toast do Windows (best-effort, sem travar)."""

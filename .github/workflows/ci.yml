@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit tests (pure modules)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # haylou_protocol e usage_map são puros (só stdlib) → rodam sem as deps de Windows
+      - name: Protocol tests
+        working-directory: app
+        run: python test_protocol.py
+      - name: Usage-map tests
+        working-directory: app
+        run: python test_usage_map.py

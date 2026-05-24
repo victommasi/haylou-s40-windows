@@ -25,16 +25,26 @@ This is an independent **Windows** app that talks to the **Haylou S30 Pro** dire
 - 🎚️ **ANC / Transparency / Normal** — one click, or cycle from anywhere with a global hotkey (`Ctrl+Alt+A`)
 - 🎮 **Game Mode** (low latency) and **Anti-leak** toggles — straight to the hardware
 - 🤖 **AI auto-switch** — reads what you're doing (music → ANC, call → Transparency, game → Game Mode) and switches for you. One click on the 🔒 locks the mode so the AI stops touching it.
+- 🧠 **Learns your habits, locally** — every manual choice is remembered (per app + time of day) so AUTO gets smarter over time. Stored only on your machine — nothing leaves the PC.
+- 💬 **Natural-language command bar** *(optional)* — type "focus mode", "sleep in 20 min", "warmer sound" and it does it. Powered by Google Gemini's free tier with **your own key** (no key is bundled). Only the text you type is sent; everything else stays local.
 - 🔋 **Battery, now-playing and media controls** — play / pause / next / previous and volume, with a live equalizer animation
-- 🎛️ **Software Equalizer** (via [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)) and **Spatial Sound** (Windows Sonic) — features the earbuds don't have in hardware, supplied by the PC
+- 🎛️ **Software Equalizer** (via [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)) and **Spatial Sound** (Windows Sonic) — features the earbuds don't have in hardware, supplied by the PC. The EQ applies to **all PC audio**, not just the earbuds, and isn't saved on the device.
 - 🪟 **System tray** with a color-coded current-mode icon, **auto-start on boot**, and **low-battery notifications**
-- 💎 Premium dark UI, fully scrollable, ships as a **single `.exe`** — no Python install required
+- 💎 Premium UI with **light / dark themes** (instant toggle), fits in one compact window, ships as a **single `.exe`** — no Python install required
 
 ## Download
 
 ➡️ **[Download the latest `.exe`](../../releases/latest)** — just run it. No installer, no dependencies.
 
 > Requires Windows 10/11 with Bluetooth LE. First launch scans for your Haylou earbuds and remembers them.
+
+**"Windows protected your PC"?** The `.exe` isn't code-signed (a signing cert costs money for a free project), so SmartScreen shows a warning. To run it: click **More info → Run anyway**. If you'd rather be sure, verify the download against the **SHA-256** published in the release notes:
+
+```powershell
+Get-FileHash "Haylou S30 Pro.exe" -Algorithm SHA256
+```
+
+Prefer not to trust a binary? [Build it yourself](#build-from-source) from source in one command.
 
 ## Supported devices
 
@@ -66,6 +76,14 @@ powershell -File app/build_exe.ps1
 ## Tech stack
 
 Python · [Flet](https://flet.dev) (Flutter-powered UI) · [bleak](https://github.com/hbldh/bleak) (Bluetooth LE) · [pycaw](https://github.com/AndreMiras/pycaw) (volume) · WinRT (now-playing) · [pystray](https://github.com/moses-palmer/pystray) (tray) · [PyInstaller](https://pyinstaller.org) (packaging).
+
+## Privacy
+
+Local-first by design. The app has **no analytics, no telemetry, no account, no server**.
+
+- **Earbud control, battery, EQ, themes** — fully offline.
+- **AUTO learning** — usage patterns (which mode you pick, per app + time of day) are stored only in `%APPDATA%\haylou-win\usage.json` on your machine. Counts only — no window titles, no audio, no text.
+- **Command bar (optional AI)** — the **only** thing that ever leaves your PC, and only when you use it: the sentence you type is sent to Google Gemini to interpret. Your key stays in your local config and is never bundled in the build.
 
 ## Disclaimer
 

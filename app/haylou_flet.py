@@ -84,6 +84,7 @@ class BleWorker:
         self.addr = addr or KNOWN_ADDR   # multi-fone: endereço alvo (config ou default)
         self.on_device = on_device       # callback(addr, name) ao achar/lembrar o fone
         self.client = None
+        self._valid_seen = False         # já recebeu algum frame que o protocolo reconhece?
         threading.Thread(target=lambda: asyncio.run(self._loop()), daemon=True).start()
 
     def send(self, kind, value=None): self.q.put((kind, value))
@@ -119,16 +120,24 @@ class BleWorker:
     def _notify(self, _, data):
         b = bytes(data)
         pct = proto.parse_battery(b)
-        if pct is not None: self.on_batt(pct)
+        if pct is not None: self.on_batt(pct); self._valid_seen = True
         if self.on_mode:
             m = proto.parse_anc_mode(b)
-            if m is not None: self.on_mode(m)
+            if m is not None: self.on_mode(m); self._valid_seen = True
         if self.on_game:
             g = proto.parse_game_mode(b)
-            if g is not None: self.on_game(g)
+            if g is not None: self.on_game(g); self._valid_seen = True
         if self.on_leak:
             lk = proto.parse_attr(b, proto.ORD_LEAK)
-            if lk in (0, 1): self.on_leak(bool(lk))
+            if lk in (0, 1): self.on_leak(bool(lk)); self._valid_seen = True
+
+    async def _compat_check(self):
+        """Resiliência de firmware: se conectou mas em ~8s nada do protocolo foi
+        reconhecido, avisa (firmware do fone provavelmente mudou) em vez de ficar
+        mudo. Não bloqueia nada — só informa."""
+        await asyncio.sleep(8)
+        if self.client and self.client.is_connected and not self._valid_seen:
+            self.on_status("conectado, mas protocolo não reconhecido (firmware?)", T.WARN)
 
     async def _poll_battery(self):
         while True:
@@ -137,6 +146,7 @@ class BleWorker:
     async def _loop(self):
         await self._connect(); await self._status()
         asyncio.create_task(self._poll_battery())
+        asyncio.create_task(self._compat_check())
         while True:
             kind, value = await asyncio.get_event_loop().run_in_executor(None, self.q.get)
             if kind == "quit": break
@@ -709,6 +719,9 @@ def main(page: ft.Page):
                         "A IA roda no free tier do Google — custo zero.", size=12),
                 ft.Text(ai.GET_KEY_URL, size=11, color=T.TRANSP, selectable=True),
                 field,
+                ft.Text("🔒 Só o texto que você digitar na barra vai pro Google. ANC, EQ, "
+                        "bateria e o aprendizado do AUTO são 100% locais.",
+                        size=10, color=T.TXT_FAINT),
             ], tight=True, spacing=10, width=370),
             actions=[ft.TextButton("Cancelar", on_click=lambda ev: _close_dialog(dlg)),
                      ft.FilledButton("Salvar", on_click=_save)],
@@ -716,7 +729,9 @@ def main(page: ft.Page):
         _show_dialog(dlg)
 
     ai_input = ft.TextField(
-        hint_text="Fala o que quer… ex: modo foco, desliga em 20min, som mais grave",
+        hint_text=("Fala o que quer… ex: modo foco, desliga em 20min, som mais grave"
+                   if ai.has_key(_ai_key())
+                   else "Toque na 🔑 e cole a chave grátis pra ativar a IA"),
         text_size=12, expand=True, dense=True, filled=True, border_radius=T.R_PILL,
         on_submit=lambda e: run_ai(),
     )
@@ -796,8 +811,9 @@ def main(page: ft.Page):
             # ─── ÁUDIO DO PC (EQ + anti-leak + spatial) ───
             section("Áudio",
                 ft.Column([
-                    ft.Text("Equalizador", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
-                    ft.Text("aplica em qualquer som do PC", size=10, color=T.TXT_FAINT),
+                    ft.Text("Equalizador do PC", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                    ft.Text("via Equalizer APO — vale toda saída do PC, não fica salvo no fone",
+                            size=10, color=T.TXT_FAINT),
                     eq_chips_row,
                 ], spacing=8, tight=True),
                 ft.Row([
@@ -939,7 +955,11 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    import sys, os
+    # trava de instância única: se já há uma janela aberta, foca ela e sai
+    # (evita 2+ cópias brigando pela única conexão BLE)
+    if not sysint.acquire_single_instance():
+        sysint.focus_existing_window("Haylou S30 Pro")
+        sys.exit(0)
     try:
         ft.run(main)
     finally:
