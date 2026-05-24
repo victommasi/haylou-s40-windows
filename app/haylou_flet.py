@@ -9,12 +9,16 @@ import asyncio
 import threading
 import queue
 import time
+import os
+import sys
 import flet as ft
 from bleak import BleakClient, BleakScanner
 import winmedia as wm
 import haylou_protocol as proto
 import context_engine as ce
 import system_integration as sysint
+import ai_engine as ai
+import usage_map as um
 
 CF_WRITE  = "0000cf05-0000-1000-8000-00805f9b34fb"
 CF_NOTIFY = "0000cf06-0000-1000-8000-00805f9b34fb"
@@ -23,28 +27,40 @@ ADDR_HINTS = ("BB:AD:EE",)  # OUI da Haylou — usado pra achar o fone no scan
 # descoberto e salvo no config.json na 1ª conexão (não vem chumbado no código).
 KNOWN_ADDR = ""
 
+def _asset(name: str) -> str:
+    """Caminho de um asset, funcionando em dev E dentro do .exe (PyInstaller _MEIPASS)."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", name)
+
 # ═══════════════════ DESIGN TOKENS ═══════════════════
 class T:
-    # superfícies
-    BG       = "#08080F"
-    SURFACE  = "#13131F"
-    SURFACE2 = "#1B1B2A"
-    BORDER   = "#26263A"
-    # texto
-    TXT      = "#FFFFFF"
-    TXT_DIM  = "#8B8B9E"
-    TXT_FAINT= "#5A5A6E"
-    # accent / semântico
+    # ── constantes (NÃO mudam com o tema) ──
     ANC      = "#FF3B5C"
     TRANSP   = "#3B82F6"
     NORMAL   = "#64748B"
-    OK       = "#22D67B"
-    WARN     = "#FBBF24"
-    # raios / espaços
     R_CARD   = 18
     R_PILL   = 999
-    # tipografia
     F = "Segoe UI"
+    # ── dependentes de tema (preenchidos por apply_palette) ──
+    BG = SURFACE = SURFACE2 = BORDER = TXT = TXT_DIM = TXT_FAINT = OK = WARN = ""
+
+# Paletas: dark = original premium quase-preto. light = fundo branco/claro.
+# Accent (ANC/TRANSP/NORMAL) é constante; só superfícies/texto/semântico mudam.
+PALETTES = {
+    "dark":  dict(BG="#08080F", SURFACE="#13131F", SURFACE2="#1B1B2A", BORDER="#26263A",
+                  TXT="#FFFFFF", TXT_DIM="#8B8B9E", TXT_FAINT="#5A5A6E",
+                  OK="#22D67B", WARN="#FBBF24"),
+    "light": dict(BG="#F4F5F7", SURFACE="#FFFFFF", SURFACE2="#EDF0F4", BORDER="#DCE1E8",
+                  TXT="#0E1116", TXT_DIM="#586072", TXT_FAINT="#98A1B0",
+                  OK="#16A34A", WARN="#D97706"),
+}
+THEMED_KEYS = ("BG", "SURFACE", "SURFACE2", "BORDER", "TXT", "TXT_DIM", "TXT_FAINT", "OK", "WARN")
+
+def apply_palette(name: str):
+    for k, v in PALETTES.get(name, PALETTES["dark"]).items():
+        setattr(T, k, v)
+
+apply_palette("dark")  # default no import; main() reaplica conforme o config
 
 ANC_MODES = [
     ("ANC",            1, T.ANC,    ft.Icons.NOISE_CONTROL_OFF, "Cancelamento de ruído"),
@@ -155,16 +171,27 @@ def main(page: ft.Page):
     import os
     page.title = "Haylou S30 Pro"
     page.window.width = 400
-    page.window.height = 880
+    page.window.height = 860  # compacto: tudo cabe sem rolar
     page.window.resizable = False
     page.window.title_bar_hidden = False
+    _theme = sysint.load_config().get("theme", "dark")  # tema salvo (dark|light)
+    apply_palette(_theme)
     page.bgcolor = T.BG
     page.padding = 0
     page.scroll = ft.ScrollMode.AUTO  # rola quando o conteúdo passa da altura da janela
-    page.theme_mode = ft.ThemeMode.DARK
+    page.theme_mode = ft.ThemeMode.LIGHT if _theme == "light" else ft.ThemeMode.DARK
     page.fonts = {}
+    # ícone da janela/taskbar. s30.ico foi sobrescrito com o logo novo e vai embutido
+    # no .exe. page.window.icon não basta no Flet desktop → forçamos via WM_SETICON.
+    _ico = _asset("s30.ico")
+    try:
+        page.window.icon = _ico
+    except Exception:
+        pass
+    sysint.set_window_icon("Haylou S30 Pro", _ico)
 
-    state = {"mode": 1, "batt": None, "game": False, "auto": False, "last_auto": None}
+    state = {"mode": 1, "batt": None, "game": False, "auto": False, "last_auto": None,
+             "ctx_app": ""}  # ctx_app = último app REAL em foco (ignora a janela do Haylou)
     tray = {"icon": None}  # ícone da bandeja (atualiza com o modo)
 
     # lock de interação: quando o user mexe num controle, ignora updates do device
@@ -177,11 +204,13 @@ def main(page: ft.Page):
     state["mode_locked"] = False  # cadeado: trava o modo (AUTO não mexe)
 
     # ─── HERO: card grande do modo ativo (com glow + cadeado de override) ───
-    hero_icon = ft.Icon(MODE_ICON[1], color=T.TXT, size=40)
-    hero_name = ft.Text("ANC", size=24, weight=ft.FontWeight.W_800, color=T.TXT)
-    hero_desc = ft.Text("Cancelamento de ruído", size=12, color="#FFFFFF", opacity=0.7)
+    # hero sempre tem fundo de cor de modo (accent) → texto branco em ambos os temas.
+    # uso "#FEFEFE" (branco-sentinela) pra varredura de tema NÃO trocar pra preto no light.
+    hero_icon = ft.Icon(MODE_ICON[1], color="#FEFEFE", size=34)
+    hero_name = ft.Text("ANC", size=22, weight=ft.FontWeight.W_800, color="#FEFEFE")
+    hero_desc = ft.Text("Cancelamento de ruído", size=12, color="#FEFEFE", opacity=0.7)
     hero_lock = ft.Container(
-        content=ft.Icon(ft.Icons.LOCK_OPEN, color="#FFFFFF", size=20),
+        content=ft.Icon(ft.Icons.LOCK_OPEN, color="#FEFEFE", size=20),
         ink=True, on_click=lambda e: toggle_lock(), padding=6, border_radius=99,
         tooltip="Travar o modo (impede a IA de trocar)",
         opacity=0.6,
@@ -191,9 +220,9 @@ def main(page: ft.Page):
             hero_icon,
             ft.Column([hero_name, hero_desc], spacing=1, tight=True, expand=True),
             hero_lock,
-        ], spacing=16, alignment=ft.MainAxisAlignment.START,
+        ], spacing=14, alignment=ft.MainAxisAlignment.START,
            vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        padding=ft.Padding.symmetric(vertical=22, horizontal=24),
+        padding=ft.Padding.symmetric(vertical=15, horizontal=22),
         border_radius=T.R_CARD,
         bgcolor=T.ANC,
         shadow=ft.BoxShadow(blur_radius=32, spread_radius=-6, color=T.ANC, offset=ft.Offset(0, 8)),
@@ -204,7 +233,7 @@ def main(page: ft.Page):
         """Liga/desliga o cadeado do modo. Travado = a IA (AUTO) não troca o modo."""
         state["mode_locked"] = on
         hero_lock.content.name = ft.Icons.LOCK if on else ft.Icons.LOCK_OPEN
-        hero_lock.content.color = T.WARN if on else "#FFFFFF"
+        hero_lock.content.color = T.WARN if on else "#FEFEFE"
         hero_lock.opacity = 1.0 if on else 0.6
         try: page.update()
         except Exception: pass
@@ -229,11 +258,11 @@ def main(page: ft.Page):
     def make_chip(name, modo, color, icon, desc):
         chip = ft.Container(
             content=ft.Column([
-                ft.Icon(icon, color=T.TXT, size=22),
+                ft.Icon(icon, color=T.TXT, size=20),
                 ft.Text(name, size=11, weight=ft.FontWeight.W_600, color=T.TXT,
                         text_align=ft.TextAlign.CENTER),
-            ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
-            width=104, height=78, border_radius=14,
+            ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+            width=104, height=62, border_radius=14,
             bgcolor=T.SURFACE, border=ft.Border.all(2, T.SURFACE),
             alignment=ft.Alignment(0, 0), ink=True,
             on_click=lambda e, m=modo: on_anc(m),
@@ -247,7 +276,7 @@ def main(page: ft.Page):
         for m, (chip, color) in chips.items():
             on = (m == modo)
             chip.border = ft.Border.all(2, color if on else T.SURFACE)
-            chip.bgcolor = (color + "26") if on else T.SURFACE  # +26 = alpha leve
+            chip.bgcolor = ft.Colors.with_opacity(0.16, color) if on else T.SURFACE  # tint do accent
         page.update()
 
     def on_anc(modo):
@@ -265,6 +294,9 @@ def main(page: ft.Page):
         paint_hero(modo); paint_chips(modo)
         set_status(f"{MODE_NAMES[modo]}" + ("  🔒 AUTO pausado" if auto_override else ""), T.WARN)
         worker.send("anc", modo)
+        # aprende: escolha manual é o sinal mais forte da preferência (grava local)
+        try: um.record(state["ctx_app"], time.localtime().tm_hour, modo)
+        except Exception: pass
 
     def _reset_scale(modo):
         if modo in chips:
@@ -302,7 +334,7 @@ def main(page: ft.Page):
         c = ft.Container(
             content=ft.Text(name, size=11, weight=ft.FontWeight.W_600, color=T.TXT,
                             text_align=ft.TextAlign.CENTER),
-            padding=ft.Padding.symmetric(vertical=8, horizontal=12),
+            padding=ft.Padding.symmetric(vertical=6, horizontal=12),
             border_radius=T.R_PILL, bgcolor=T.SURFACE2,
             border=ft.Border.all(1, T.BORDER), ink=True,
             on_click=lambda e, n=name: on_eq(n),
@@ -313,7 +345,7 @@ def main(page: ft.Page):
     def paint_eq():
         for n, c in eq_chips.items():
             on = (n == eq_state["sel"])
-            c.bgcolor = (T.TRANSP + "26") if on else T.SURFACE2
+            c.bgcolor = ft.Colors.with_opacity(0.16, T.TRANSP) if on else T.SURFACE2
             c.border = ft.Border.all(1, T.TRANSP if on else T.BORDER)
         page.update()
     def on_eq(name):
@@ -322,7 +354,7 @@ def main(page: ft.Page):
         paint_eq()
         set_status(f"EQ: {name}" if ok else "EQ APO indisponível", T.OK if ok else T.ANC)
         c = sysint.load_config(); c["eq"] = name; sysint.save_config(c)
-    eq_chips_row = ft.Row([make_eq_chip(n) for n in eq_names], wrap=True, spacing=6, run_spacing=6)
+    eq_chips_row = ft.Row([make_eq_chip(n) for n in eq_names], wrap=True, spacing=5, run_spacing=5)
 
     # ─── Now playing (com equalizer animado) ───
     eq_bars = [ft.Container(width=3, height=h, bgcolor=T.OK, border_radius=2,
@@ -408,7 +440,7 @@ def main(page: ft.Page):
 
     def paint_auto():
         on = state["auto"]
-        auto_badge.bgcolor = (T.OK + "22") if on else T.SURFACE
+        auto_badge.bgcolor = ft.Colors.with_opacity(0.13, T.OK) if on else T.SURFACE
         auto_badge.border = ft.Border.all(2, T.OK if on else T.SURFACE)
         auto_badge.content.controls[0].color = T.OK if on else T.TXT_FAINT
         auto_badge.content.controls[1].color = T.OK if on else T.TXT_FAINT
@@ -432,6 +464,13 @@ def main(page: ft.Page):
             return
         try:
             modo, game, motivo = ce.suggest_mode()
+            # overlay do mapa de uso local: se você tem um hábito claro nesse
+            # app + período, a SUA preferência vence a heurística genérica
+            learned = um.predict(state["ctx_app"], time.localtime().tm_hour)
+            if learned:
+                lmode, share, _total = learned
+                modo = lmode
+                motivo = f"você costuma usar {MODE_NAMES[lmode]} aqui ({int(share*100)}%)"
             if modo is not None and (force or modo != state["last_auto"]):
                 state["last_auto"] = modo
                 state["mode"] = modo
@@ -450,6 +489,19 @@ def main(page: ft.Page):
             time.sleep(4)
             if state["auto"]:
                 _auto_tick()
+
+    # rastreia o último app REAL em foco (ignora a janela do próprio Haylou) pra o
+    # aprendizado saber em que app você estava quando trocou de modo
+    SELF_PROCS = ("haylou", "python", "pythonw", "flet", "applicationframehost")
+    def _ctx_sampler():
+        while True:
+            try:
+                p = ce.get_foreground_process()
+                if p and not any(s in p for s in SELF_PROCS):
+                    state["ctx_app"] = p
+            except Exception:
+                pass
+            time.sleep(2)
 
     # ─── callbacks thread-safe ───
     def set_status(text, color=T.TXT_DIM):
@@ -484,8 +536,8 @@ def main(page: ft.Page):
             content=ft.Column([
                 ft.Text(title.upper(), size=10, color=T.TXT_FAINT, weight=ft.FontWeight.W_700),
                 *content,
-            ], spacing=10),
-            padding=16, border_radius=T.R_CARD, bgcolor=T.SURFACE,
+            ], spacing=8),
+            padding=12, border_radius=T.R_CARD, bgcolor=T.SURFACE,
         )
 
     # ─── Onboarding banner (1ª vez) ───
@@ -500,7 +552,8 @@ def main(page: ft.Page):
                          ink=True, on_click=lambda e: dismiss_onboard(), padding=4, border_radius=99),
         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         padding=ft.Padding.symmetric(vertical=10, horizontal=14),
-        border_radius=12, bgcolor=T.WARN + "1A", border=ft.Border.all(1, T.WARN + "44"),
+        border_radius=12, bgcolor=ft.Colors.with_opacity(0.10, T.WARN),
+        border=ft.Border.all(1, ft.Colors.with_opacity(0.28, T.WARN)),
     )
     def dismiss_onboard():
         onboard_banner.visible = False
@@ -519,13 +572,174 @@ def main(page: ft.Page):
                                  icon_color=T.OK if autostart_on["v"] else T.TXT_FAINT,
                                  tooltip="Abrir junto com o Windows", on_click=toggle_autostart)
 
+    # ─── TEMA dark ⇄ light (toggle instantâneo) ───
+    # Recolor por varredura: troca SÓ as cores do tema na árvore já montada — não
+    # relança o app, não rebuilda a UI. Cores de accent (ANC/TRANSP) ficam intactas.
+    def _iter_controls(items):
+        for c in items:
+            if not isinstance(c, ft.Control):
+                continue
+            yield c
+            ct = getattr(c, "content", None)
+            if isinstance(ct, ft.Control):
+                yield from _iter_controls([ct])
+            sub = getattr(c, "controls", None)
+            if isinstance(sub, (list, tuple)):
+                yield from _iter_controls(sub)
+
+    _COLOR_ATTRS = ("color", "bgcolor", "icon_color", "active_color",
+                    "thumb_color", "active_track_color")
+
+    def set_theme(name):
+        old = {k: getattr(T, k) for k in THEMED_KEYS}
+        apply_palette(name)
+        trans = {old[k].upper(): getattr(T, k) for k in THEMED_KEYS}
+        for c in _iter_controls(page.controls):
+            for a in _COLOR_ATTRS:
+                v = getattr(c, a, None)
+                if isinstance(v, str) and v.upper() in trans:
+                    setattr(c, a, trans[v.upper()])
+            b = getattr(c, "border", None)
+            if b is not None:
+                for side in ("top", "right", "bottom", "left"):
+                    s = getattr(b, side, None)
+                    col = getattr(s, "color", None) if s is not None else None
+                    if isinstance(col, str) and col.upper() in trans:
+                        s.color = trans[col.upper()]
+        # re-aplica estados dinâmicos (bordas/tints de seleção) com a paleta nova
+        paint_chips(state["mode"]); paint_eq(); paint_auto()
+        page.bgcolor = T.BG
+        page.theme_mode = ft.ThemeMode.LIGHT if name == "light" else ft.ThemeMode.DARK
+        cfg_t = sysint.load_config(); cfg_t["theme"] = name; sysint.save_config(cfg_t)
+        is_dark = (name != "light")
+        theme_btn.icon = ft.Icons.LIGHT_MODE if is_dark else ft.Icons.DARK_MODE
+        theme_btn.tooltip = "Tema claro" if is_dark else "Tema escuro"
+        set_status("Tema claro ☀️" if not is_dark else "Tema escuro 🌙", T.TXT_DIM)
+        page.update()
+
+    def toggle_theme(e):
+        cur = sysint.load_config().get("theme", "dark")
+        set_theme("light" if cur == "dark" else "dark")
+    theme_btn = ft.IconButton(
+        ft.Icons.LIGHT_MODE if _theme != "light" else ft.Icons.DARK_MODE,
+        icon_size=18, icon_color=T.TXT_DIM,
+        tooltip="Tema claro" if _theme != "light" else "Tema escuro",
+        on_click=toggle_theme)
+
+    # ═══════════ IA (Gemini free tier, BYO key): comando em linguagem natural ═══════════
+    sleep_state = {"timer": None}
+    def start_sleep_timer(minutes):
+        """Sleep timer em SOFTWARE: pausa a música depois de X min (não manda comando
+        BLE não-confirmado, que já bagunçou o volume). Cancela o anterior se houver."""
+        if sleep_state["timer"]:
+            try: sleep_state["timer"].cancel()
+            except Exception: pass
+        mins = max(1, int(minutes))
+        def _fire():
+            try:
+                if np_playing["v"]:
+                    wm.play_pause()  # pausa o que estiver tocando
+                sysint.notify("Haylou S30 Pro", f"Sleep timer: pausei a música ({mins} min)")
+                set_status(f"😴 Sleep timer ({mins} min) — música pausada", T.WARN)
+            except Exception: pass
+        t = threading.Timer(mins * 60, _fire); t.daemon = True; t.start()
+        sleep_state["timer"] = t
+
+    def apply_ai_actions(a):
+        """Executa o dict de ações que a IA devolveu."""
+        if a.get("anc") is not None:
+            on_anc(a["anc"])  # já trava o modo se o AUTO estiver ligado
+        if a.get("game") is not None:
+            mark_touch("game"); game_switch.value = bool(a["game"])
+            worker.send("game", 1 if a["game"] else 0)
+        if a.get("leak") is not None:
+            mark_touch("leak"); leak_switch.value = bool(a["leak"])
+            worker.send("leak", 1 if a["leak"] else 0)
+        if a.get("volume") is not None:
+            apply_volume(a["volume"])
+        if a.get("eq_profile"):
+            on_eq(a["eq_profile"])
+        elif a.get("eq_bands"):
+            if wm.set_eq_apo_custom(a["eq_bands"], "IA"):
+                eq_state["sel"] = None; paint_eq()
+        if a.get("sleep_min"):
+            start_sleep_timer(a["sleep_min"])
+        set_status("🤖 " + (a.get("reply") or "Feito."), T.OK)
+        try: page.update()
+        except Exception: pass
+
+    def _ai_key(): return sysint.load_config().get("ai_key", "")
+
+    def _show_dialog(dlg):  # Flet 0.85 não tem page.open() — usa overlay + open flag
+        if dlg not in page.overlay:
+            page.overlay.append(dlg)
+        dlg.open = True
+        page.update()
+    def _close_dialog(dlg):
+        dlg.open = False
+        page.update()
+
+    def open_key_dialog(e=None):
+        field = ft.TextField(value=_ai_key(), password=True, can_reveal_password=True,
+                             label="Chave do Google AI Studio", text_size=12)
+        def _save(ev):
+            c = sysint.load_config(); c["ai_key"] = (field.value or "").strip(); sysint.save_config(c)
+            _close_dialog(dlg)
+            set_status("Chave da IA salva ✓" if c["ai_key"] else "Chave removida", T.OK)
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("IA — chave grátis do Gemini"),
+            content=ft.Column([
+                ft.Text("Pegue uma chave grátis (sem cartão) no Google AI Studio e cole aqui. "
+                        "A IA roda no free tier do Google — custo zero.", size=12),
+                ft.Text(ai.GET_KEY_URL, size=11, color=T.TRANSP, selectable=True),
+                field,
+            ], tight=True, spacing=10, width=370),
+            actions=[ft.TextButton("Cancelar", on_click=lambda ev: _close_dialog(dlg)),
+                     ft.FilledButton("Salvar", on_click=_save)],
+        )
+        _show_dialog(dlg)
+
+    ai_input = ft.TextField(
+        hint_text="Fala o que quer… ex: modo foco, desliga em 20min, som mais grave",
+        text_size=12, expand=True, dense=True, filled=True, border_radius=T.R_PILL,
+        on_submit=lambda e: run_ai(),
+    )
+    def run_ai():
+        txt = (ai_input.value or "").strip()
+        if not txt:
+            return
+        if not ai.has_key(_ai_key()):
+            open_key_dialog(); return
+        ai_input.value = ""; set_status("IA pensando…", T.WARN); page.update()
+        def _work():
+            try:
+                apply_ai_actions(ai.interpret_command(_ai_key(), txt))
+            except ai.AIError as ex:
+                set_status(str(ex), T.ANC)
+            except Exception:
+                set_status("IA falhou. Tenta de novo.", T.ANC)
+        threading.Thread(target=_work, daemon=True).start()
+    ai_send = ft.IconButton(ft.Icons.SEND_ROUNDED, icon_color=T.OK, icon_size=18,
+                            tooltip="Pedir pra IA", on_click=lambda e: run_ai())
+    ai_key_btn = ft.IconButton(ft.Icons.KEY, icon_size=16, icon_color=T.TXT_FAINT,
+                               tooltip="Chave da IA (grátis)", on_click=open_key_dialog)
+    ai_bar = ft.Container(
+        content=ft.Row([
+            ft.Icon(ft.Icons.AUTO_AWESOME, color=T.OK, size=18),
+            ai_input, ai_send,
+        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(vertical=3, horizontal=10),
+        border_radius=T.R_PILL, bgcolor=T.SURFACE, border=ft.Border.all(1, T.BORDER),
+    )
+
     root = ft.Container(
         opacity=0,  # fade-in na abertura
         animate_opacity=ft.Animation(400, ft.AnimationCurve.EASE_OUT),
         content=ft.Column([
             # topbar: foto + nome + bateria/status + settings
             ft.Row([
-                ft.Image(src=img_path, width=52, height=52, fit=ft.BoxFit.CONTAIN),
+                ft.Image(src=img_path, width=46, height=46, fit=ft.BoxFit.CONTAIN),
                 ft.Column([
                     ft.Text("Haylou S30 Pro", size=16, weight=ft.FontWeight.W_800, color=T.TXT),
                     ft.Row([status_dot, status_lbl], spacing=6, tight=True),
@@ -533,11 +747,12 @@ def main(page: ft.Page):
                 ft.Column([
                     ft.Row([ft.Icon(ft.Icons.BATTERY_FULL, color=T.WARN, size=16), batt_text],
                            spacing=3, tight=True),
-                    settings_btn,
+                    ft.Row([theme_btn, ai_key_btn, settings_btn], spacing=0, tight=True),
                 ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END, tight=True),
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
 
-            onboard_banner,
+            # ─── barra de comando da IA (linguagem natural) ───
+            ai_bar,
 
             # linha AUTO (IA)
             ft.Row([auto_badge, auto_hint], spacing=10,
@@ -559,7 +774,7 @@ def main(page: ft.Page):
                             ], spacing=0, tight=True)], spacing=12),
                     game_switch,
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                padding=ft.Padding.symmetric(vertical=12, horizontal=16),
+                padding=ft.Padding.symmetric(vertical=9, horizontal=14),
                 border_radius=T.R_CARD, bgcolor=T.SURFACE,
             ),
 
@@ -611,11 +826,11 @@ def main(page: ft.Page):
                                      alignment=ft.Alignment(0, 0), on_click=lambda e: vol_step(5)),
                         vol_value,
                     ], spacing=2),
-                ], spacing=12),
-                padding=16, border_radius=T.R_CARD, bgcolor=T.SURFACE,
+                ], spacing=8),
+                padding=12, border_radius=T.R_CARD, bgcolor=T.SURFACE,
             ),
-        ], spacing=14),
-        padding=ft.Padding.symmetric(vertical=20, horizontal=20),
+        ], spacing=9),
+        padding=ft.Padding.symmetric(vertical=12, horizontal=16),
     )
 
     page.add(root)
@@ -642,9 +857,10 @@ def main(page: ft.Page):
             time.sleep(5); refresh_now_playing()
     threading.Thread(target=_np_poller, daemon=True).start()
 
-    # loop da IA de contexto (AUTO)
+    # loop da IA de contexto (AUTO) + rastreador de app em foco (alimenta o aprendizado)
     paint_auto()
     threading.Thread(target=_auto_loop, daemon=True).start()
+    threading.Thread(target=_ctx_sampler, daemon=True).start()
 
     # ─── PERSISTÊNCIA: restaura último EQ salvo (chips já salvam no on_eq) ───
     cfg = sysint.load_config()

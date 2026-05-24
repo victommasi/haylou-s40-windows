@@ -29,9 +29,11 @@ app/set_anc2.py
 app/set_anc3.py
 app/haylou.py
 app/haylou_gui.py
+app/_shot.ps1
 
 # ─── Local config / OS / envs ───
 config.json
+usage.json
 .venv/
 venv/
 .DS_Store

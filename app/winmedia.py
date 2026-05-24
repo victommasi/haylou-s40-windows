@@ -154,6 +154,21 @@ def set_eq_apo(profile_name: str) -> bool:
     except Exception:
         return False
 
+def set_eq_apo_custom(bands, label: str = "IA") -> bool:
+    """Escreve bandas customizadas (lista de (hz, gain_dB)) no Equalizer APO.
+    Usado pelo EQ gerado por IA."""
+    if not _os.path.exists(EQ_APO_CONFIG) or not bands:
+        return False
+    lines = ["# Haylou Central — perfil: " + label]
+    for hz, gain in bands:
+        lines.append(f"Filter: ON PK Fc {int(hz)} Hz Gain {float(gain)} dB Q 1.0")
+    try:
+        with open(EQ_APO_CONFIG, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return True
+    except Exception:
+        return False
+
 def eq_apo_available() -> bool:
     return _os.path.exists(EQ_APO_CONFIG)
 

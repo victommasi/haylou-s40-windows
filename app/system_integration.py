@@ -14,7 +14,8 @@ ICON_PATH = os.path.join(APP_DIR, "assets", "s30.png")
 # ─── Persistência (lembra último estado/EQ) ───
 def load_config() -> dict:
     try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
+        # utf-8-sig tolera BOM (ex: se o config for escrito por fora com PowerShell)
+        with open(CONFIG_PATH, encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -119,14 +120,63 @@ def update_tray_mode(icon, mode: int):
     except Exception:
         pass
 
+# ─── Ícone da janela (titlebar + taskbar) ───
+def set_window_icon(title: str, ico_path: str, retries: int = 40):
+    """Força o ícone da janela via WM_SETICON. O Flet desktop senão mostra o logo
+    do Flet (o --icon do PyInstaller só troca o ícone do arquivo .exe). Espera a
+    janela aparecer, em thread (não bloqueia). Tipos cuidados pra handle 64-bit."""
+    import time as _t
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    u.FindWindowW.restype = wintypes.HWND
+    u.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    u.LoadImageW.restype = ctypes.c_void_p
+    u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                             ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p]
+    WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+    IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x0010, 0x0040
+
+    def _do():
+        if not os.path.exists(ico_path):
+            return
+        for _ in range(retries):
+            hwnd = u.FindWindowW(None, title)
+            if hwnd:
+                big = u.LoadImageW(None, ico_path, IMAGE_ICON, 0, 0,
+                                   LR_LOADFROMFILE | LR_DEFAULTSIZE)
+                small = u.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+                if big:
+                    u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
+                    u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small or big)
+                    return
+            _t.sleep(0.4)
+    threading.Thread(target=_do, daemon=True).start()
+
 # ─── Auto-start no boot ───
 def get_startup_path() -> str:
     appdata = os.environ.get("APPDATA", "")
     return os.path.join(appdata, "Microsoft", "Windows", "Start Menu",
                         "Programs", "Startup", "Haylou S30.lnk")
 
+def _autostart_target():
+    """Decide pra onde o atalho de boot aponta. Prioriza o .exe (app de verdade,
+    sem depender de Python):
+      1. rodando como .exe empacotado  → o próprio executável
+      2. rodando como script + .exe já buildado em dist/ → aponta pro .exe
+      3. fallback dev → pythonw + haylou_flet.py
+    Retorna (target_path, arguments, working_dir)."""
+    if getattr(sys, "frozen", False):
+        return sys.executable, "", os.path.dirname(sys.executable)
+    built_exe = os.path.join(APP_DIR, "dist", "Haylou S30 Pro.exe")
+    if os.path.exists(built_exe):
+        return built_exe, "", os.path.dirname(built_exe)
+    pyw = sys.executable.replace("python.exe", "pythonw.exe")
+    return pyw, f'"{os.path.join(APP_DIR, "haylou_flet.py")}"', APP_DIR
+
 def set_autostart(enabled: bool, target_cmd: str = None) -> bool:
-    """Cria/remove atalho na pasta Startup do Windows."""
+    """Cria/remove atalho na pasta Startup do Windows (aponta pro .exe quando existe)."""
     lnk = get_startup_path()
     if not enabled:
         try:
@@ -135,14 +185,12 @@ def set_autostart(enabled: bool, target_cmd: str = None) -> bool:
             return True
         except Exception:
             return False
-    # cria atalho via COM (pythoncom/win32com) ou PowerShell fallback
     try:
-        py = sys.executable.replace("python.exe", "pythonw.exe")
-        script = os.path.join(APP_DIR, "haylou_flet.py")
+        target, args, workdir = _autostart_target()
         ps = (f'powershell -NoProfile -Command "'
               f'$s=(New-Object -ComObject WScript.Shell).CreateShortcut(\'{lnk}\');'
-              f'$s.TargetPath=\'{py}\';$s.Arguments=\'\\\"{script}\\\"\';'
-              f'$s.WorkingDirectory=\'{APP_DIR}\';$s.Save()"')
+              f'$s.TargetPath=\'{target}\';$s.Arguments=\'{args}\';'
+              f'$s.WorkingDirectory=\'{workdir}\';$s.Save()"')
         os.system(ps)
         return os.path.exists(lnk)
     except Exception:
