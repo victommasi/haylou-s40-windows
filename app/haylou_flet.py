@@ -13,6 +13,7 @@ import os
 import sys
 import flet as ft
 from bleak import BleakClient, BleakScanner
+from bleak.backends.device import BLEDevice
 import winmedia as wm
 import haylou_protocol as proto
 import context_engine as ce
@@ -93,19 +94,24 @@ class BleWorker:
         if self.client and self.client.is_connected: return True
         self.on_status("conectando", T.WARN)
         # 1) tenta o endereço conhecido (config/1ª conexão). Se vazio, vai direto pro scan.
+        #    IMPORTANTE: passamos um BLEDevice (não a string do endereço). No Windows o
+        #    fone NÃO anuncia BLE no estado já-conectado-como-áudio; o bleak 3.x, se
+        #    receber só a string, faz um scan que falha ("device not found"). Com um
+        #    BLEDevice ele conecta direto pelo endereço pareado (from_bluetooth_address).
         if self.addr:
             try:
-                self.client = BleakClient(self.addr, timeout=6.0)
+                self.client = BleakClient(BLEDevice(self.addr, "HAYLOU S30", None), timeout=8.0)
                 await self.client.connect()
                 if self.client.is_connected:
                     await self.client.start_notify(CF_NOTIFY, self._notify)
                     self.on_status("conectado", T.OK); return True
             except Exception: pass
-        # fallback: escaneia e conecta no 1º fone Haylou (e lembra o endereço)
+        # fallback: escaneia e conecta no 1º fone Haylou (e lembra o endereço). Passa o
+        # BLEDevice descoberto (não d.address) pelo mesmo motivo acima.
         try:
             for d in await BleakScanner.discover(timeout=4.0):
                 if d.address.upper().startswith(ADDR_HINTS):
-                    self.client = BleakClient(d.address, timeout=6.0)
+                    self.client = BleakClient(d, timeout=6.0)
                     await self.client.connect()
                     if self.client.is_connected:
                         await self.client.start_notify(CF_NOTIFY, self._notify)
