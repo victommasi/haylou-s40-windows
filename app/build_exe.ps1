@@ -1,42 +1,64 @@
-# Empacota o Haylou S30 Pro num app standalone (sem terminal, sem Python visivel).
-# Usa o Python310 (onde flet/bleak/pycaw/winrt estao instalados), nao o 'python' do PATH.
-# MODO --onedir: pasta com o .exe + _internal/. Mais robusto que --onefile (que crasha
-# no PKG comprimindo o binario gigante do Flet). No fim zipa pra compartilhar.
-$ErrorActionPreference = 'Continue'
-Set-Location 'C:\Projetos\haylou-win\app'
+# Packages Haylou S30 Pro into a single standalone .exe (no terminal, no Python needed).
+#
+#   powershell -ExecutionPolicy Bypass -File build_exe.ps1
+#   powershell -File build_exe.ps1 -Python "C:\path\to\python.exe"   # override interpreter
+#
+# Notes that took a few failed builds to learn:
+#  * Build OUTSIDE the project dir (workpath in %TEMP%). An antivirus/indexer touching the
+#    in-project `build\` folder mid-build causes `FileNotFoundError: base_library.zip`.
+#  * Pass --add-data sources as ABSOLUTE paths, otherwise they resolve relative to the
+#    spec file (which lives in the temp workpath) and PyInstaller can't find the assets.
+#  * Use the Python that actually has the deps installed (flet/bleak/pycaw/winrt/...),
+#    not a bare `python` stub on PATH.
+param([string]$Python = "")
 
-$py = 'C:\Users\Igor Silveira\AppData\Local\Programs\Python\Python310\python.exe'
+$ErrorActionPreference = 'Stop'
+$app  = $PSScriptRoot
+$work = Join-Path $env:TEMP 'haylou_pyi'
 
-Write-Host "Limpando build anterior..." -ForegroundColor DarkGray
-Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
-Remove-Item -Force '*.spec' -ErrorAction SilentlyContinue
+if (-not $Python) {
+    $local310 = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python310\python.exe'
+    if (Test-Path $local310) { $Python = $local310 } else { $Python = 'python' }
+}
+Write-Host "Python:  $Python"
+Write-Host "Workdir: $work"
 
-$a = @('-m','PyInstaller','--noconfirm','--onedir','--windowed','--name','HaylouS30Pro',
-  '--icon','assets\s30.ico','--add-data','assets\s30.png;assets','--add-data','assets\s30.ico;assets',
-  '--collect-all','flet','--collect-all','flet_desktop','--collect-all','winrt',
-  '--hidden-import','winrt.windows.media.control','--hidden-import','winrt.windows.foundation',
-  '--hidden-import','winrt.windows.devices.bluetooth',
-  '--hidden-import','winrt.windows.devices.bluetooth.genericattributeprofile',
-  '--hidden-import','winrt.windows.devices.bluetooth.advertisement','--hidden-import','comtypes',
-  '--hidden-import','pycaw.pycaw','--hidden-import','pystray._win32','--hidden-import','PIL.ImageFont',
-  '--hidden-import','keyboard','haylou_flet.py')
+Write-Host "Cleaning previous build..." -ForegroundColor DarkGray
+Remove-Item -Recurse -Force "$app\build", "$app\dist" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $work | Out-Null
 
-Write-Host "Empacotando com PyInstaller (--onedir, pode levar alguns minutos)..." -ForegroundColor Yellow
-$p = Start-Process -FilePath $py -ArgumentList $a -WorkingDirectory 'C:\Projetos\haylou-win\app' `
-     -RedirectStandardOutput 'build.out.log' -RedirectStandardError 'build.err.log' -NoNewWindow -Wait -PassThru
-Write-Host "PyInstaller ExitCode: $($p.ExitCode)"
+Write-Host "Packaging with PyInstaller (--onefile, takes a few minutes)..." -ForegroundColor Yellow
+& $Python -m PyInstaller --noconfirm --clean --onefile --windowed `
+    --name "Haylou S30 Pro" `
+    --workpath  $work `
+    --specpath  $work `
+    --distpath  "$app\dist" `
+    --icon      "$app\assets\s30.ico" `
+    --add-data  "$app\assets\s30.png;assets" `
+    --add-data  "$app\assets\s30.ico;assets" `
+    --collect-all "flet" `
+    --collect-all "flet_desktop" `
+    --collect-all "winrt" `
+    --collect-submodules "bleak" `
+    --hidden-import "winrt.windows.media.control" `
+    --hidden-import "winrt.windows.foundation" `
+    --hidden-import "winrt.windows.devices.bluetooth" `
+    --hidden-import "winrt.windows.devices.bluetooth.genericattributeprofile" `
+    --hidden-import "winrt.windows.devices.bluetooth.advertisement" `
+    --hidden-import "comtypes" `
+    --hidden-import "pycaw.pycaw" `
+    --hidden-import "pystray._win32" `
+    --hidden-import "PIL.ImageFont" `
+    --hidden-import "keyboard" `
+    "$app\haylou_flet.py"
 
 Write-Host ""
-if (Test-Path 'dist\HaylouS30Pro\HaylouS30Pro.exe') {
-    # nome bonito pro exe (onedir: o exe acha o _internal ao lado, pode renomear)
-    Rename-Item 'dist\HaylouS30Pro\HaylouS30Pro.exe' 'Haylou S30 Pro.exe' -ErrorAction SilentlyContinue
-    Rename-Item 'dist\HaylouS30Pro' 'Haylou S30 Pro' -ErrorAction SilentlyContinue
-    $sz = [math]::Round(((Get-ChildItem 'dist\Haylou S30 Pro' -Recurse | Measure-Object Length -Sum).Sum)/1MB, 1)
-    Write-Host "APP criado: dist\Haylou S30 Pro\Haylou S30 Pro.exe (pasta = $sz MB)" -ForegroundColor Green
-    Write-Host "Zipando pra compartilhar..." -ForegroundColor Yellow
-    Compress-Archive -Path 'dist\Haylou S30 Pro\*' -DestinationPath 'dist\Haylou S30 Pro.zip' -Force
-    $zsz = [math]::Round((Get-Item 'dist\Haylou S30 Pro.zip').Length/1MB, 1)
-    Write-Host "ZIP: dist\Haylou S30 Pro.zip ($zsz MB)" -ForegroundColor Green
+$exe = "$app\dist\Haylou S30 Pro.exe"
+if (Test-Path $exe) {
+    $sz = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+    Write-Host "EXE created: $exe ($sz MB)" -ForegroundColor Green
 } else {
-    Write-Host "FALHOU - app nao gerado, ver build.err.log" -ForegroundColor Red
+    Write-Host "FAILED - exe not generated, see the PyInstaller output above" -ForegroundColor Red
+    exit 1
 }
