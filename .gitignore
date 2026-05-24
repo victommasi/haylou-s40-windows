@@ -1,0 +1,38 @@
+# ─── Build artifacts ───
+app/build/
+app/dist/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
+
+# ─── Logs & scratch ───
+*.log
+bruteforce-progress.txt
+*.tmp
+
+# ─── Reverse-engineering INPUTS — NOT redistributable (Haylou copyrighted material) ───
+# These stay on the local machine only. Never publish the decompiled app or the APK.
+apk/
+decompiled/
+*.xapk
+*.apk
+
+# ─── Throwaway research / capture scripts (kept local) ───
+app/bruteforce.py
+app/confirm.py
+app/sniff.py
+app/set_anc.py
+app/set_anc2.py
+app/set_anc3.py
+app/haylou.py
+app/haylou_gui.py
+
+# ─── Local config / OS / envs ───
+config.json
+.venv/
+venv/
+.DS_Store
+Thumbs.db

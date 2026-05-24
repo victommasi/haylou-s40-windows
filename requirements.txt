@@ -1,0 +1,13 @@
+# Haylou S30 Pro — Windows app dependencies (Python 3.10+)
+flet>=0.85          # Flutter-powered desktop UI
+bleak               # Bluetooth Low Energy (talks to the earbuds)
+pycaw               # Windows volume control
+winrt               # now-playing (System Media Transport Controls)
+pystray             # system tray icon
+pillow              # tray icon rendering
+keyboard            # global hotkey (Ctrl+Alt+A)
+comtypes            # COM bridge for pycaw
+win10toast-click    # low-battery toast notifications
+
+# packaging (optional, for building the .exe):
+# pyinstaller

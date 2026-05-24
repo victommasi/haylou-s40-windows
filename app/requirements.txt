@@ -1,0 +1,16 @@
+# Haylou S30 Pro — Windows control app
+# Python 3.10+ on Windows. Install with:  pip install -r requirements.txt
+
+flet>=0.28           # UI (Flutter-based desktop)
+bleak>=0.21          # Bluetooth Low Energy (talks to the earbuds)
+pycaw>=20240210      # Windows volume control
+comtypes>=1.2        # COM bridge (pycaw / audio endpoints)
+winrt>=1.0           # Windows Runtime — "now playing" (SMTC). On some setups this
+                     # ships as the 'winsdk' package; install that instead if 'winrt' fails.
+pystray>=0.19        # system tray icon
+pillow>=10.0         # tray icon rendering (PIL)
+keyboard>=0.13       # global hotkey (Ctrl+Alt+A)
+win10toast-click>=0.1.2  # Windows toast notifications (low-battery alert); optional
+
+# Packaging the .exe (optional, only to build a standalone binary):
+# pyinstaller>=6.0
