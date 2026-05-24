@@ -590,24 +590,39 @@ def main(page: ft.Page):
     _COLOR_ATTRS = ("color", "bgcolor", "icon_color", "active_color",
                     "thumb_color", "active_track_color")
 
+    def _reborder(b, trans):
+        """Recria o ft.Border com as cores remapeadas (objeto NOVO — mutar in-place
+        não dispara re-render no Flet). Retorna None se não for um Border."""
+        if not isinstance(b, ft.Border):
+            return None
+        def _side(s):
+            col = getattr(s, "color", None) if s is not None else None
+            if isinstance(col, str) and col.upper() in trans:
+                return ft.BorderSide(getattr(s, "width", 1) or 1, trans[col.upper()])
+            return s
+        return ft.Border(left=_side(b.left), top=_side(b.top),
+                         right=_side(b.right), bottom=_side(b.bottom))
+
     def set_theme(name):
         old = {k: getattr(T, k) for k in THEMED_KEYS}
         apply_palette(name)
         trans = {old[k].upper(): getattr(T, k) for k in THEMED_KEYS}
         for c in _iter_controls(page.controls):
-            for a in _COLOR_ATTRS:
-                v = getattr(c, a, None)
-                if isinstance(v, str) and v.upper() in trans:
-                    setattr(c, a, trans[v.upper()])
-            b = getattr(c, "border", None)
-            if b is not None:
-                for side in ("top", "right", "bottom", "left"):
-                    s = getattr(b, side, None)
-                    col = getattr(s, "color", None) if s is not None else None
-                    if isinstance(col, str) and col.upper() in trans:
-                        s.color = trans[col.upper()]
+            try:  # um controle problemático não pode abortar a varredura toda
+                for a in _COLOR_ATTRS:
+                    v = getattr(c, a, None)
+                    if isinstance(v, str) and v.upper() in trans:
+                        setattr(c, a, trans[v.upper()])
+                nb = _reborder(getattr(c, "border", None), trans)
+                if nb is not None:
+                    c.border = nb  # reatribui objeto novo → Flet re-renderiza a borda
+            except Exception:
+                pass
         # re-aplica estados dinâmicos (bordas/tints de seleção) com a paleta nova
-        paint_chips(state["mode"]); paint_eq(); paint_auto()
+        try:
+            paint_chips(state["mode"]); paint_eq(); paint_auto()
+        except Exception:
+            pass
         page.bgcolor = T.BG
         page.theme_mode = ft.ThemeMode.LIGHT if name == "light" else ft.ThemeMode.DARK
         cfg_t = sysint.load_config(); cfg_t["theme"] = name; sysint.save_config(cfg_t)
