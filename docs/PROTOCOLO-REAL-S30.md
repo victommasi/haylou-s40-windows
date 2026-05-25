@@ -80,3 +80,31 @@ Provavel: 0=off, 1=anc, 2=transparencia (mas confirmar — difere do campo statu
 - `EarbudCmd.HOP_OPCODE_SET_DEVICE_CONFIG = 242`
 - `RequestManager.f13610h = {aa,bb,cc}`, `f13611i = {dd,ee,ff}`
 - `BtDeviceConfigRequest.getConfigByteArray()` — envelope do cmdData
+
+## ✅ MAPA DEFINITIVO DE FEATURES (medido via run-info, 25/05/2026)
+
+> O S30 Pro é **HEADPHONE over-ear** — NÃO é earbud TWS. Sem estojo, sem
+> sensor in-ear por fone, **uma única bateria**. O SDK `com.bes.sdk` no
+> decompilado (EQControl, GestureInfo, SealingInfo, MyBudsInfo, etc.) é
+> genérico do chipset BES e cobre OUTROS modelos — **não reflete este hardware**.
+
+Pedimos o run-info completo (`build_get_all`, bitmask `RUNINFO_ALL`) e lemos
+cada TLV. Valor real = feature existe; `0xff` = feature ausente no hardware.
+
+Resposta real capturada: `aabbcc000900110009020901020aff020b00020cff020f00ddeeff`
+
+| TLV ordinal | Feature                | S30 Pro |
+|-------------|------------------------|---------|
+| `0x09`      | ANC mode (0/1/2)       | ✅ SUPORTADO |
+| `0x0b`      | Game Mode              | ✅ SUPORTADO |
+| `0x0f`      | Anti-vazamento         | ✅ SUPORTADO |
+| `0x0a`      | Auto-play              | ❌ `0xff` ausente |
+| `0x0c`      | **EQ preset no fone**  | ❌ `0xff` ausente |
+| `0x12`–`15` | spatial/wind/wear/cena | ❌ nem reportados |
+
+Bateria: GET_BATTERY → `aabbcc000200050002020264ddeeff` → `02 02 64` = 100% (única bateria).
+
+**Conclusão:** o app já extrai 100% do que o protocolo HOP do S30 Pro oferece.
+EQ e Áudio Espacial são entregues pelo PC (Equalizer APO + Windows Sonic),
+porque o **chipset não os implementa** — confirmado pelo próprio fone, não suposto.
+NÃO reinvestigar EQ-no-fone / gestos-no-fone / in-ear: o hardware respondeu `0xff`.

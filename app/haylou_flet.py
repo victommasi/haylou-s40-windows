@@ -90,38 +90,72 @@ class BleWorker:
 
     def send(self, kind, value=None): self.q.put((kind, value))
 
-    async def _connect(self):
-        if self.client and self.client.is_connected: return True
-        self.on_status("conectando", T.WARN)
-        # 1) tenta o endereço conhecido (config/1ª conexão). Se vazio, vai direto pro scan.
-        #    IMPORTANTE: passamos um BLEDevice (não a string do endereço). No Windows o
-        #    fone NÃO anuncia BLE no estado já-conectado-como-áudio; o bleak 3.x, se
-        #    receber só a string, faz um scan que falha ("device not found"). Com um
-        #    BLEDevice ele conecta direto pelo endereço pareado (from_bluetooth_address).
-        if self.addr:
-            try:
-                self.client = BleakClient(BLEDevice(self.addr, "HAYLOU S30", None), timeout=8.0)
-                await self.client.connect()
-                if self.client.is_connected:
-                    await self.client.start_notify(CF_NOTIFY, self._notify)
-                    self.on_status("conectado", T.OK); return True
+    def _has_control_service(self) -> bool:
+        """True se a tabela GATT atual expõe o serviço de controle (cf00/cf06).
+        Às vezes o fone conecta mas só publica os serviços genéricos (1800/180a) —
+        estado 'capado' que acontece quando ele fica ocioso ou disputa o canal com
+        outro host. Nesse estado o controle ANC não funciona, então tratamos como
+        NÃO-conectado e reconectamos, em vez de ficar mudo."""
+        try:
+            for svc in self.client.services:
+                if svc.uuid.lower().startswith("0000cf06") or svc.uuid.lower().startswith("0000cf00"):
+                    return True
+                for ch in svc.characteristics:
+                    if ch.uuid.lower() == CF_NOTIFY:
+                        return True
+        except Exception:
+            return False
+        return False
+
+    async def _try_client(self, ble_device, timeout: float, force_fresh: bool = False) -> bool:
+        """Conecta num BLEDevice e SÓ considera sucesso se o serviço de controle
+        aparecer. force_fresh ignora o cache de serviços do Windows (que pode ter
+        guardado uma tabela capada antiga)."""
+        winrt = {"use_cached_services": False} if force_fresh else {}
+        self.client = BleakClient(ble_device, timeout=timeout, winrt=winrt)
+        await self.client.connect()
+        if not self.client.is_connected:
+            return False
+        if not self._has_control_service():
+            # conectou mas veio capado — desconecta pra forçar nova descoberta depois
+            try: await self.client.disconnect()
             except Exception: pass
-        # fallback: escaneia e conecta no 1º fone Haylou (e lembra o endereço). Passa o
-        # BLEDevice descoberto (não d.address) pelo mesmo motivo acima.
+            self.client = None
+            return False
+        await self.client.start_notify(CF_NOTIFY, self._notify)
+        return True
+
+    async def _connect(self):
+        if self.client and self.client.is_connected and self._has_control_service():
+            return True
+        self.on_status("conectando", T.WARN)
+        # 1) endereço conhecido. Passa BLEDevice (não string): no Windows o fone não
+        #    anuncia BLE já-conectado-como-áudio; bleak 3.x com string faz um scan que
+        #    falha. Com BLEDevice conecta direto via from_bluetooth_address.
+        #    Tenta com cache; se vier capado (sem cf00/cf06), retenta forçando
+        #    re-descoberta sem cache (o cache do Windows às vezes guarda tabela velha).
+        if self.addr:
+            for force_fresh in (False, True):
+                try:
+                    if await self._try_client(BLEDevice(self.addr, "HAYLOU S30", None),
+                                              timeout=8.0, force_fresh=force_fresh):
+                        self.on_status("conectado", T.OK); return True
+                except Exception: pass
+        # fallback: escaneia e conecta no 1º fone Haylou (e lembra o endereço).
         try:
             for d in await BleakScanner.discover(timeout=4.0):
                 if d.address.upper().startswith(ADDR_HINTS):
-                    self.client = BleakClient(d, timeout=6.0)
-                    await self.client.connect()
-                    if self.client.is_connected:
-                        await self.client.start_notify(CF_NOTIFY, self._notify)
-                        self.addr = d.address
-                        if self.on_device:
-                            try: self.on_device(d.address, getattr(d, "name", None))
-                            except Exception: pass
-                        self.on_status("conectado", T.OK); return True
+                    try:
+                        if await self._try_client(d, timeout=6.0):
+                            self.addr = d.address
+                            if self.on_device:
+                                try: self.on_device(d.address, getattr(d, "name", None))
+                                except Exception: pass
+                            self.on_status("conectado", T.OK); return True
+                    except Exception: pass
         except Exception: pass
-        self.on_status("fone offline", T.ANC); return False
+        # chegou aqui = ou offline, ou no estado capado. Mensagem acionável p/ headphone.
+        self.on_status("fone sem resposta — desliga e liga o fone", T.ANC); return False
 
     def _notify(self, _, data):
         b = bytes(data)
@@ -146,8 +180,13 @@ class BleWorker:
             self.on_status("conectado, mas protocolo não reconhecido (firmware?)", T.WARN)
 
     async def _poll_battery(self):
+        """Watchdog: pede status periodicamente E reconecta sozinho se a conexão
+        caiu ou ficou capada (cf00/cf06 sumiram). Assim o usuário não precisa mais
+        desligar/ligar o fone na mão — o app se recupera quando o fone volta."""
         while True:
-            await asyncio.sleep(30); self.q.put(("status", None))
+            await asyncio.sleep(30)
+            self.q.put(("reconnect", None))
+            self.q.put(("status", None))
 
     async def _loop(self):
         await self._connect(); await self._status()
@@ -156,6 +195,11 @@ class BleWorker:
         while True:
             kind, value = await asyncio.get_event_loop().run_in_executor(None, self.q.get)
             if kind == "quit": break
+            if kind == "reconnect":
+                # só re-tenta se realmente caiu/capou (não reconecta à toa)
+                if not (self.client and self.client.is_connected and self._has_control_service()):
+                    await self._connect()
+                continue
             if not await self._connect(): continue
             try:
                 if kind == "anc":
@@ -427,10 +471,24 @@ def main(page: ft.Page):
 
     # ─── Volume ───
     vol_value = ft.Text("—", size=12, color=T.TXT, width=40, weight=ft.FontWeight.W_700)
+    vol_state = {"dragging": 0.0}  # timestamp do último arrasto (evita re-sync no meio do gesto)
     def apply_volume(v):
         v = max(0, min(100, int(v)))
+        vol_state["dragging"] = time.time()
         wm.set_volume(v); vol_slider.value = v; vol_value.value = f"{v}%"; page.update()
+    def sync_volume():
+        """Relê o volume REAL do endpoint atual e atualiza a tela. Não mexe se o
+        usuário arrastou o slider há <2s (pra não brigar com o gesto). Mantém a tela
+        fiel quando o endpoint troca por baixo (A2DP <-> Headset, reconexão)."""
+        if time.time() - vol_state["dragging"] < 2.0:
+            return
+        v = wm.get_volume()
+        if v is not None and abs(v - (vol_slider.value or 0)) >= 1:
+            vol_slider.value = v; vol_value.value = f"{v}%"
+            try: page.update()
+            except Exception: pass
     def on_vol_drag(e):
+        vol_state["dragging"] = time.time()  # marca: não re-sincronizar agora
         vol_value.value = f"{int(e.control.value)}%"; page.update()
     vol_slider = ft.Slider(min=0, max=100, value=50, expand=True, active_color=T.TRANSP,
                            thumb_color=T.TXT, on_change=on_vol_drag,
@@ -891,7 +949,7 @@ def main(page: ft.Page):
     threading.Thread(target=_eq_animator, daemon=True).start()
     def _np_poller():
         while True:
-            time.sleep(5); refresh_now_playing()
+            time.sleep(5); refresh_now_playing(); sync_volume()
     threading.Thread(target=_np_poller, daemon=True).start()
 
     # loop da IA de contexto (AUTO) + rastreador de app em foco (alimenta o aprendizado)

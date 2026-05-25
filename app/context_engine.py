@@ -84,19 +84,28 @@ def suggest_mode():
         if any(k in title for k in ("meet", "zoom", "teams", "webex", "call", "reunião", "reuniao")):
             return (MODE_TRANSP, False, "call no browser")
 
-    # 3) Música tocando -> ANC
+    # 3) Música tocando -> ANC (imersão). Vídeo/outro áudio -> Normal.
     try:
         sessions = wm.get_now_playing()
         playing = next((s for s in sessions if s["playing"]), None)
         if playing:
             app = playing["app"].lower()
-            # música dedicada = ANC
-            if any(m in app for m in ("spotify", "music", "groove", "tidal", "deezer")):
+            # música dedicada = ANC (você quer imersão)
+            if any(m in app for m in ("spotify", "music", "groove", "tidal", "deezer",
+                                       "youtube music", "amazonmusic", "foobar", "aimp")):
                 return (MODE_ANC, False, f"música ({playing['app']})")
-            # vídeo no browser tocando = Normal (não precisa ANC pesado)
-            return (MODE_ANC, False, f"áudio ({playing['app']})")
+            # vídeo/podcast/browser tocando = Normal (ANC pesado não ajuda, e te isola)
+            return (MODE_NORMAL, False, f"vídeo/áudio ({playing['app']})")
     except Exception:
         pass
 
-    # 4) nada relevante -> não mexe
+    # 4) trabalho concentrado (editor/terminal/doc) sem áudio -> ANC pra focar.
+    #    Só quando NADA toca: se tocar algo, a regra 3 acima já decidiu.
+    FOCUS_APPS = ("code", "devenv", "pycharm", "idea", "sublime", "cursor",
+                  "windowsterminal", "powershell", "cmd", "wt",
+                  "winword", "excel", "powerpnt", "notion", "obsidian")
+    if any(f in proc for f in FOCUS_APPS):
+        return (MODE_ANC, False, f"foco ({proc})")
+
+    # 5) nada relevante -> não mexe
     return (None, None, "sem contexto claro")

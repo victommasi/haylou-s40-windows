@@ -40,34 +40,59 @@ def prev_track(): _tap(VK_MEDIA_PREV_TRACK)
 def toggle_mute(): _tap(VK_VOLUME_MUTE)
 
 # ─── Volume (pycaw) ───
-# Cacheia a interface de volume (evita recriar COM toda hora = causa do access violation
-# no shutdown). Uma instancia, reusada.
-_vol_cache = None
-def _vol_iface():
-    global _vol_cache
-    if _vol_cache is not None:
-        return _vol_cache
+# Cacheia a interface de volume DO ENDPOINT DEFAULT ATUAL. Problema que isso resolve:
+# quando o fone reconecta (ou o Windows troca o dispositivo de saída padrão entre o
+# perfil A2DP "Fones de ouvido" e o Hands-Free "Headset"), o endpoint anterior fica
+# morto. Um cache eterno apontava pro endpoint velho → o slider mexia, mas o som não
+# mudava. Agora o cache é validado (GetMute como ping) e recriado se o default mudou
+# ou o endpoint morreu — assim o volume sempre cai no dispositivo que está tocando.
+_vol_cache = None        # (device_id, interface)
+def _default_device():
     _ensure_com()
     spk = AudioUtilities.GetSpeakers()
-    dev = spk._dev if hasattr(spk, "_dev") else spk
+    return spk._dev if hasattr(spk, "_dev") else spk
+
+def _device_id(dev):
+    try:
+        return dev.GetId()
+    except Exception:
+        return None
+
+def _vol_iface():
+    global _vol_cache
+    dev = _default_device()
+    dev_id = _device_id(dev)
+    # reaproveita o cache só se ainda for o MESMO endpoint default E continuar vivo
+    if _vol_cache is not None and _vol_cache[0] == dev_id:
+        try:
+            _vol_cache[1].GetMute()  # ping: estoura COMError se o endpoint morreu
+            return _vol_cache[1]
+        except Exception:
+            _vol_cache = None        # endpoint velho/morto → recria abaixo
     interface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-    _vol_cache = cast(interface, POINTER(IAudioEndpointVolume))
-    return _vol_cache
+    vol = cast(interface, POINTER(IAudioEndpointVolume))
+    _vol_cache = (dev_id, vol)
+    return vol
 
 def get_volume():
-    """0-100"""
+    """0-100 do endpoint de saída ATUAL (o que está tocando)."""
     try:
         return int(round(_vol_iface().GetMasterVolumeLevelScalar() * 100))
     except Exception:
         return None
 
 def set_volume(pct):
-    """pct 0-100"""
-    try:
-        _vol_iface().SetMasterVolumeLevelScalar(max(0.0, min(1.0, pct/100.0)), None)
-        return True
-    except Exception:
-        return False
+    """pct 0-100 no endpoint de saída ATUAL. Uma retentativa se o endpoint trocou
+    no meio (cache invalidado) — assim o ajuste não se perde silenciosamente."""
+    target = max(0.0, min(1.0, pct/100.0))
+    for _ in range(2):
+        try:
+            _vol_iface().SetMasterVolumeLevelScalar(target, None)
+            return True
+        except Exception:
+            global _vol_cache
+            _vol_cache = None  # força recriar no próximo loop
+    return False
 
 def is_muted():
     try:
