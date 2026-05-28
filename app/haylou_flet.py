@@ -18,7 +18,6 @@ import winmedia as wm
 import haylou_protocol as proto
 import context_engine as ce
 import system_integration as sysint
-import ai_engine as ai
 import usage_map as um
 
 CF_WRITE  = "0000cf05-0000-1000-8000-00805f9b34fb"
@@ -154,8 +153,9 @@ class BleWorker:
                             self.on_status("conectado", T.OK); return True
                     except Exception: pass
         except Exception: pass
-        # chegou aqui = ou offline, ou no estado capado. Mensagem acionável p/ headphone.
-        self.on_status("fone sem resposta — desliga e liga o fone", T.ANC); return False
+        # chegou aqui = ou offline, ou no estado capado. Mensagem acionável: cobre
+        # tanto a 1ª conexão (fone desligado/longe) quanto o estado travado.
+        self.on_status("fone não encontrado — ligue o Haylou e deixe perto", T.ANC); return False
 
     def _notify(self, _, data):
         b = bytes(data)
@@ -342,9 +342,18 @@ def main(page: ft.Page):
             chip.bgcolor = ft.Colors.with_opacity(0.16, color) if on else T.SURFACE  # tint do accent
         page.update()
 
+    def _persist(key, value):
+        """Salva o último estado de um controle no config, pra restaurar ao reabrir
+        (o fone, se desconectado no boot, não reporta — então mostramos o que o
+        usuário deixou na última vez)."""
+        try:
+            c = sysint.load_config(); c[key] = value; sysint.save_config(c)
+        except Exception: pass
+
     def on_anc(modo):
         state["mode"] = modo
         mark_touch("anc")
+        _persist("last_anc", modo)
         # se a IA (AUTO) está no comando e o user troca na mão, trava o modo —
         # senão a IA reverteria a escolha dele em até 4s. Manual sempre vence.
         auto_override = state["auto"] and not state["mode_locked"]
@@ -378,6 +387,7 @@ def main(page: ft.Page):
     def on_game(e):
         on = e.control.value
         mark_touch("game")
+        _persist("last_game", on)
         set_status(f"Game Mode {'ON' if on else 'OFF'}", T.WARN)
         worker.send("game", 1 if on else 0)
 
@@ -386,6 +396,7 @@ def main(page: ft.Page):
     def on_leak(e):
         on = e.control.value
         mark_touch("leak")
+        _persist("last_leak", on)
         set_status(f"Anti-vazamento {'ON' if on else 'OFF'}", T.WARN)
         worker.send("leak", 1 if on else 0)
 
@@ -623,7 +634,8 @@ def main(page: ft.Page):
         visible=not cfg0.get("onboarded", False),
         content=ft.Row([
             ft.Icon(ft.Icons.TIPS_AND_UPDATES, color=T.WARN, size=18),
-            ft.Text("Dica: liga o AUTO e a IA troca o modo sozinha. Ctrl+Alt+A cicla o ANC de qualquer lugar.",
+            ft.Text("Ligue seu Haylou e deixe perto do PC. Ctrl+Alt+A cicla o ANC de qualquer lugar; "
+                    "o AUTO troca o modo conforme o que você faz.",
                     size=11, color=T.TXT_DIM, expand=True),
             ft.Container(content=ft.Icon(ft.Icons.CLOSE, color=T.TXT_FAINT, size=16),
                          ink=True, on_click=lambda e: dismiss_onboard(), padding=4, border_radius=99),
@@ -718,118 +730,6 @@ def main(page: ft.Page):
         tooltip="Tema claro" if _theme != "light" else "Tema escuro",
         on_click=toggle_theme)
 
-    # ═══════════ IA (Gemini free tier, BYO key): comando em linguagem natural ═══════════
-    sleep_state = {"timer": None}
-    def start_sleep_timer(minutes):
-        """Sleep timer em SOFTWARE: pausa a música depois de X min (não manda comando
-        BLE não-confirmado, que já bagunçou o volume). Cancela o anterior se houver."""
-        if sleep_state["timer"]:
-            try: sleep_state["timer"].cancel()
-            except Exception: pass
-        mins = max(1, int(minutes))
-        def _fire():
-            try:
-                if np_playing["v"]:
-                    wm.play_pause()  # pausa o que estiver tocando
-                sysint.notify("Haylou S30 Pro", f"Sleep timer: pausei a música ({mins} min)")
-                set_status(f"😴 Sleep timer ({mins} min) — música pausada", T.WARN)
-            except Exception: pass
-        t = threading.Timer(mins * 60, _fire); t.daemon = True; t.start()
-        sleep_state["timer"] = t
-
-    def apply_ai_actions(a):
-        """Executa o dict de ações que a IA devolveu."""
-        if a.get("anc") is not None:
-            on_anc(a["anc"])  # já trava o modo se o AUTO estiver ligado
-        if a.get("game") is not None:
-            mark_touch("game"); game_switch.value = bool(a["game"])
-            worker.send("game", 1 if a["game"] else 0)
-        if a.get("leak") is not None:
-            mark_touch("leak"); leak_switch.value = bool(a["leak"])
-            worker.send("leak", 1 if a["leak"] else 0)
-        if a.get("volume") is not None:
-            apply_volume(a["volume"])
-        if a.get("eq_profile"):
-            on_eq(a["eq_profile"])
-        elif a.get("eq_bands"):
-            if wm.set_eq_apo_custom(a["eq_bands"], "IA"):
-                eq_state["sel"] = None; paint_eq()
-        if a.get("sleep_min"):
-            start_sleep_timer(a["sleep_min"])
-        set_status("🤖 " + (a.get("reply") or "Feito."), T.OK)
-        try: page.update()
-        except Exception: pass
-
-    def _ai_key(): return sysint.load_config().get("ai_key", "")
-
-    def _show_dialog(dlg):  # Flet 0.85 não tem page.open() — usa overlay + open flag
-        if dlg not in page.overlay:
-            page.overlay.append(dlg)
-        dlg.open = True
-        page.update()
-    def _close_dialog(dlg):
-        dlg.open = False
-        page.update()
-
-    def open_key_dialog(e=None):
-        field = ft.TextField(value=_ai_key(), password=True, can_reveal_password=True,
-                             label="Chave do Google AI Studio", text_size=12)
-        def _save(ev):
-            c = sysint.load_config(); c["ai_key"] = (field.value or "").strip(); sysint.save_config(c)
-            _close_dialog(dlg)
-            set_status("Chave da IA salva ✓" if c["ai_key"] else "Chave removida", T.OK)
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("IA — chave grátis do Gemini"),
-            content=ft.Column([
-                ft.Text("Pegue uma chave grátis (sem cartão) no Google AI Studio e cole aqui. "
-                        "A IA roda no free tier do Google — custo zero.", size=12),
-                ft.Text(ai.GET_KEY_URL, size=11, color=T.TRANSP, selectable=True),
-                field,
-                ft.Text("🔒 Só o texto que você digitar na barra vai pro Google. ANC, EQ, "
-                        "bateria e o aprendizado do AUTO são 100% locais.",
-                        size=10, color=T.TXT_FAINT),
-            ], tight=True, spacing=10, width=370),
-            actions=[ft.TextButton("Cancelar", on_click=lambda ev: _close_dialog(dlg)),
-                     ft.FilledButton("Salvar", on_click=_save)],
-        )
-        _show_dialog(dlg)
-
-    ai_input = ft.TextField(
-        hint_text=("Fala o que quer… ex: modo foco, desliga em 20min, som mais grave"
-                   if ai.has_key(_ai_key())
-                   else "Toque na 🔑 e cole a chave grátis pra ativar a IA"),
-        text_size=12, expand=True, dense=True, filled=True, border_radius=T.R_PILL,
-        on_submit=lambda e: run_ai(),
-    )
-    def run_ai():
-        txt = (ai_input.value or "").strip()
-        if not txt:
-            return
-        if not ai.has_key(_ai_key()):
-            open_key_dialog(); return
-        ai_input.value = ""; set_status("IA pensando…", T.WARN); page.update()
-        def _work():
-            try:
-                apply_ai_actions(ai.interpret_command(_ai_key(), txt))
-            except ai.AIError as ex:
-                set_status(str(ex), T.ANC)
-            except Exception:
-                set_status("IA falhou. Tenta de novo.", T.ANC)
-        threading.Thread(target=_work, daemon=True).start()
-    ai_send = ft.IconButton(ft.Icons.SEND_ROUNDED, icon_color=T.OK, icon_size=18,
-                            tooltip="Pedir pra IA", on_click=lambda e: run_ai())
-    ai_key_btn = ft.IconButton(ft.Icons.KEY, icon_size=16, icon_color=T.TXT_FAINT,
-                               tooltip="Chave da IA (grátis)", on_click=open_key_dialog)
-    ai_bar = ft.Container(
-        content=ft.Row([
-            ft.Icon(ft.Icons.AUTO_AWESOME, color=T.OK, size=18),
-            ai_input, ai_send,
-        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        padding=ft.Padding.symmetric(vertical=3, horizontal=10),
-        border_radius=T.R_PILL, bgcolor=T.SURFACE, border=ft.Border.all(1, T.BORDER),
-    )
-
     root = ft.Container(
         opacity=0,  # fade-in na abertura
         animate_opacity=ft.Animation(400, ft.AnimationCurve.EASE_OUT),
@@ -844,14 +744,11 @@ def main(page: ft.Page):
                 ft.Column([
                     ft.Row([ft.Icon(ft.Icons.BATTERY_FULL, color=T.WARN, size=16), batt_text],
                            spacing=3, tight=True),
-                    ft.Row([theme_btn, ai_key_btn, settings_btn], spacing=0, tight=True),
+                    ft.Row([theme_btn, settings_btn], spacing=0, tight=True),
                 ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END, tight=True),
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
 
-            # ─── barra de comando da IA (linguagem natural) ───
-            ai_bar,
-
-            # linha AUTO (IA)
+            # linha AUTO (heurística local de contexto)
             ft.Row([auto_badge, auto_hint], spacing=10,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
 
@@ -932,7 +829,13 @@ def main(page: ft.Page):
     )
 
     page.add(root)
-    paint_chips(1)
+    # restaura o ÚLTIMO estado salvo (modo/game/leak) — só visual. O fone confirma
+    # quando conectar; se estiver desconectado, o usuário vê o que deixou da última vez.
+    _last_anc = cfg0.get("last_anc", 1)
+    state["mode"] = _last_anc if _last_anc in (0, 1, 2) else 1
+    game_switch.value = bool(cfg0.get("last_game", False))
+    leak_switch.value = bool(cfg0.get("last_leak", False))
+    paint_hero(state["mode"]); paint_chips(state["mode"])
 
     # fade-in
     def _fade():
@@ -981,16 +884,20 @@ def main(page: ft.Page):
                        set_game_from_device, set_leak_from_device,
                        addr=cfg.get("device_addr"), on_device=_save_device)
 
-    # ─── NOTIFICAÇÃO de bateria baixa (avisa 1x quando cai de 20%) ───
-    batt_warned = {"done": False}
+    # ─── NOTIFICAÇÃO de bateria baixa: avisa 1x ao cruzar 20% (baixa) e 1x ao cruzar
+    #     10% (crítica). Rearma quando recarrega acima de 30%. ───
+    batt_warned = {"low": False, "crit": False}
     _orig_set_batt = set_batt
     def set_batt(pct):
         _orig_set_batt(pct)
-        if pct <= 20 and not batt_warned["done"]:
-            batt_warned["done"] = True
+        if pct <= 10 and not batt_warned["crit"]:
+            batt_warned["crit"] = True; batt_warned["low"] = True
+            sysint.notify("Haylou S30 Pro", f"Bateria crítica: {pct}% — carregue o fone")
+        elif pct <= 20 and not batt_warned["low"]:
+            batt_warned["low"] = True
             sysint.notify("Haylou S30 Pro", f"Bateria baixa: {pct}%")
         elif pct > 30:
-            batt_warned["done"] = False
+            batt_warned["low"] = False; batt_warned["crit"] = False
     worker.on_batt = set_batt  # reaponta pro wrapper
 
     # ─── HOTKEY GLOBAL: Ctrl+Alt+A cicla ANC → Transparência → Normal ───
