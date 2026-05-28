@@ -277,7 +277,8 @@ def _autostart_target():
     Retorna (target_path, arguments, working_dir)."""
     if getattr(sys, "frozen", False):
         return sys.executable, "", os.path.dirname(sys.executable)
-    built_exe = os.path.join(APP_DIR, "dist", "Haylou S30 Pro.exe")
+    # onedir: o exe fica em dist\Haylou S30 Pro\Haylou S30 Pro.exe
+    built_exe = os.path.join(APP_DIR, "dist", "Haylou S30 Pro", "Haylou S30 Pro.exe")
     if os.path.exists(built_exe):
         return built_exe, "", os.path.dirname(built_exe)
     pyw = sys.executable.replace("python.exe", "pythonw.exe")

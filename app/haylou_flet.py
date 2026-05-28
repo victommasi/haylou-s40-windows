@@ -849,10 +849,13 @@ def main(page: ft.Page):
     def toggle_lang(e=None):
         new = "en" if i18n.get_lang() == "pt" else "pt"
         c = sysint.load_config(); c["lang"] = new; sysint.save_config(c)
-        try:
-            sysint.relaunch_self()
-        except Exception:
-            set_status("reabra o app pra trocar o idioma", T.WARN)
+        # NÃO reinicia sozinho (re-exec do onefile dava erro de DLL). Avisa pra reabrir.
+        i18n.set_lang(new)  # aplica já pros próximos textos/notificações
+        msg = ("Idioma alterado — feche e abra o app pra aplicar"
+               if new == "pt" else "Language changed — close and reopen the app to apply")
+        set_status(msg, T.WARN)
+        try: sysint.notify("Haylou S30 Pro", msg)
+        except Exception: pass
     lang_btn = ft.IconButton(ft.Icons.TRANSLATE, icon_size=18, icon_color=T.TXT_DIM,
                              tooltip=t("lang_tip"), on_click=toggle_lang)
 

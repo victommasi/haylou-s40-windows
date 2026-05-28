@@ -28,8 +28,11 @@ Remove-Item -Recurse -Force "$app\build", "$app\dist" -ErrorAction SilentlyConti
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
 
-Write-Host "Packaging with PyInstaller (--onefile, takes a few minutes)..." -ForegroundColor Yellow
-& $Python -m PyInstaller --noconfirm --clean --onefile --windowed `
+# --onedir (NÃO --onefile): o exe + DLLs ficam numa pasta fixa. Sem descompactar no
+# temp (_MEI) a cada abertura → acaba o erro "Failed to load python310.dll" e o ícone
+# da taskbar fica estável. Distribui zipando a pasta dist\Haylou S30 Pro\.
+Write-Host "Packaging with PyInstaller (--onedir, takes a few minutes)..." -ForegroundColor Yellow
+& $Python -m PyInstaller --noconfirm --clean --onedir --windowed `
     --name "Haylou S30 Pro" `
     --workpath  $work `
     --specpath  $work `
@@ -54,10 +57,12 @@ Write-Host "Packaging with PyInstaller (--onefile, takes a few minutes)..." -For
     "$app\haylou_flet.py"
 
 Write-Host ""
-$exe = "$app\dist\Haylou S30 Pro.exe"
+# no onedir o exe fica em dist\Haylou S30 Pro\Haylou S30 Pro.exe
+$exe = "$app\dist\Haylou S30 Pro\Haylou S30 Pro.exe"
 if (Test-Path $exe) {
-    $sz = [math]::Round((Get-Item $exe).Length / 1MB, 1)
-    Write-Host "EXE created: $exe ($sz MB)" -ForegroundColor Green
+    $folder = "$app\dist\Haylou S30 Pro"
+    $sz = [math]::Round(((Get-ChildItem $folder -Recurse | Measure-Object Length -Sum).Sum) / 1MB, 1)
+    Write-Host "APP created: $exe (pasta ~$sz MB)" -ForegroundColor Green
 } else {
     Write-Host "FAILED - exe not generated, see the PyInstaller output above" -ForegroundColor Red
     exit 1
