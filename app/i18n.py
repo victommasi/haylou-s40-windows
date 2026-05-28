@@ -105,6 +105,8 @@ STRINGS = {
     # tray
     "tray_open":       ("Abrir Haylou", "Open Haylou"),
     "tray_quit":       ("Sair", "Quit"),
+    "tray_hint":       ("O app continua na bandeja. Clique no ícone pra abrir; botão direito → Sair.",
+                        "The app keeps running in the tray. Click the icon to open; right-click → Quit."),
 }
 
 

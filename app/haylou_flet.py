@@ -1120,10 +1120,18 @@ def main(page: ft.Page):
         import os as _os; _os._exit(0)
 
     # ─── fechar (X) esconde pro tray em vez de encerrar (sair = menu do tray) ───
+    # Na 1ª vez avisa que continua no tray (senão parece que travou). Depois fica quieto.
     def hide_window():
         try:
             page.window.visible = False; page.update()
         except Exception: pass
+        c = sysint.load_config()
+        if not c.get("tray_hint_shown"):
+            c["tray_hint_shown"] = True; sysint.save_config(c)
+            try:
+                sysint.notify("Haylou S30 Pro",
+                              t("tray_hint") if i18n else "Continua rodando na bandeja. Clique no ícone pra abrir; botão direito → Sair.")
+            except Exception: pass
     def _on_window_event(e):
         if e.data == "close":
             hide_window()
