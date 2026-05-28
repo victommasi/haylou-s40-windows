@@ -74,21 +74,29 @@ def release_single_instance():
         pass
 
 def relaunch_self():
-    """Reinicia o app limpo (re-exec). Usado pra trocar idioma sem deixar worker/
-    hotkeys/threads duplicados. Libera o mutex, sobe uma nova instância com um pequeno
-    atraso (pra esta sair antes) e encerra a atual."""
+    """Reinicia o app limpo. Usado pra trocar idioma sem deixar worker/hotkeys/threads
+    duplicados.
+
+    CUIDADO com onefile do PyInstaller: o exe descompacta numa pasta temp _MEIxxxx que é
+    APAGADA quando o processo morre. Se a nova instância subir antes da limpeza terminar,
+    ela bate num _MEI inconsistente e dá 'Failed to load python310.dll'. Por isso lançamos
+    via 'explorer.exe' (que abre o exe 100% desacoplado do processo atual e do seu _MEI)
+    DEPOIS de um atraso, e só então encerramos esta instância."""
     import subprocess
-    if getattr(sys, "frozen", False):
-        target = [sys.executable]                      # rodando como .exe
-    else:
-        target = [sys.executable, os.path.abspath(sys.argv[0])]  # dev: python script
     release_single_instance()
-    # cmd que espera ~1.2s e então sobe o app de novo (dá tempo da atual encerrar)
-    if os.name == "nt":
-        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        quoted = " ".join(f'"{a}"' for a in target)
-        subprocess.Popen(f'timeout /t 2 /nobreak >nul & {quoted}',
-                         shell=True, creationflags=flags, close_fds=True)
+    if getattr(sys, "frozen", False):
+        exe = sys.executable  # caminho do .exe onefile (NÃO o _MEI temporário)
+        if os.name == "nt":
+            # 'start' via explorer desacopla totalmente; atraso dá tempo do _MEI ser limpo
+            subprocess.Popen(
+                f'cmd /c timeout /t 3 /nobreak >nul & start "" "{exe}"',
+                shell=True,
+                creationflags=0x00000008 | 0x08000000,  # DETACHED_PROCESS | CREATE_NO_WINDOW
+                close_fds=True,
+            )
+    else:
+        # dev (script): re-exec direto é seguro (não tem _MEI)
+        subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])], close_fds=True)
     os._exit(0)
 
 # ─── Notificação Windows (bateria baixa etc) ───
