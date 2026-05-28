@@ -1,9 +1,8 @@
 name: Release build
 
-# Builds the single-file .exe in CI (so it can be code-signed by SignPath, which
-# only signs artifacts produced by a trusted pipeline). Runs on version tags or
-# manually. The signing step self-activates once SignPath is configured (see
-# docs/SIGNING.md); until then the workflow just builds + attaches the unsigned exe.
+# Builds the app in CI (--onedir: a folder with the exe + DLLs, no temp _MEI at
+# runtime) and attaches a .zip to the GitHub release. Runs on version tags or
+# manually.
 
 on:
   push:
@@ -13,8 +12,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,40 +22,29 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build .exe
+      - name: Build app (onedir)
         run: powershell -ExecutionPolicy Bypass -File app/build_exe.ps1
 
-      - name: Upload unsigned artifact
-        id: artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: HaylouS30Pro
-          path: app/dist/Haylou S30 Pro.exe
-          if-no-files-found: error
+      - name: Make shortcut (correct icon + AppID for pinning)
+        run: powershell -ExecutionPolicy Bypass -File app/make_shortcut.ps1
 
-      # ── Code signing via SignPath Foundation (free for open source). ──
-      # Activates automatically once the repo has the SIGNPATH_API_TOKEN secret and
-      # the SIGNPATH_ORG_ID / SIGNPATH_PROJECT_SLUG / SIGNPATH_POLICY_SLUG variables.
-      - name: Sign with SignPath
-        if: env.SIGNPATH_API_TOKEN != ''
-        uses: signpath/github-action-submit-signing-request@v1
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
-          github-artifact-id: ${{ steps.artifact.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: signed
+      - name: Zip the app folder
+        run: |
+          cd "app/dist"
+          Compress-Archive -Path "Haylou S30 Pro" -DestinationPath "Haylou-S30-Pro-Windows.zip" -Force
+        shell: pwsh
 
-      - name: Attach SIGNED exe to the release
-        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNPATH_API_TOKEN != ''
+      - name: Compute SHA-256
+        run: |
+          $h = (Get-FileHash "app/dist/Haylou-S30-Pro-Windows.zip" -Algorithm SHA256).Hash
+          "SHA-256: $h" | Out-File -FilePath sha.txt -Encoding ascii
+          Write-Host "SHA-256: $h"
+        shell: pwsh
+
+      - name: Attach zip to the release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: signed/Haylou S30 Pro.exe
-
-      - name: Attach UNSIGNED exe to the release
-        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNPATH_API_TOKEN == ''
-        uses: softprops/action-gh-release@v2
-        with:
-          files: app/dist/Haylou S30 Pro.exe
+          files: |
+            app/dist/Haylou-S30-Pro-Windows.zip
+            sha.txt

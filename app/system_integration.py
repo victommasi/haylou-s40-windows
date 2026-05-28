@@ -246,20 +246,38 @@ def set_window_icon(title: str, ico_path: str, retries: int = 40):
     WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
     IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x0010, 0x0040
 
+    # SetClassLongPtr (ícone da CLASSE da janela) — é o que o Windows usa pra
+    # agrupar na taskbar e ao FIXAR. Sem isso o WM_SETICON só troca a barra de título.
+    GCLP_HICON, GCLP_HICONSM = -14, -34
+    is64 = ctypes.sizeof(ctypes.c_void_p) == 8
+    _SetClassLong = u.SetClassLongPtrW if (is64 and hasattr(u, "SetClassLongPtrW")) else u.SetClassLongW
+    _SetClassLong.restype = ctypes.c_void_p
+    _SetClassLong.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+
+    def _apply(hwnd):
+        big = u.LoadImageW(None, ico_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+        small = u.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        if not big:
+            return False
+        u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)       # barra de título / Alt+Tab
+        u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small or big)
+        _SetClassLong(hwnd, GCLP_HICON, big)                  # taskbar / fixar
+        _SetClassLong(hwnd, GCLP_HICONSM, small or big)
+        return True
+
     def _do():
         if not os.path.exists(ico_path):
             return
-        for _ in range(retries):
+        applied_for = None
+        # roda por ~20s reaplicando: o Flet às vezes recria a janela (client temp),
+        # então insistir garante que o ícone gruda na janela final E na classe dela.
+        for i in range(retries):
             hwnd = u.FindWindowW(None, title)
             if hwnd:
-                big = u.LoadImageW(None, ico_path, IMAGE_ICON, 0, 0,
-                                   LR_LOADFROMFILE | LR_DEFAULTSIZE)
-                small = u.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
-                if big:
-                    u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
-                    u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small or big)
-                    return
-            _t.sleep(0.4)
+                _apply(hwnd)
+                applied_for = hwnd
+            # depois de aplicar uma vez, espaça mais (mantém grudado sem gastar CPU)
+            _t.sleep(0.4 if applied_for is None else 0.8)
     threading.Thread(target=_do, daemon=True).start()
 
 # ─── Auto-start no boot ───

@@ -259,9 +259,11 @@ def main(page: ft.Page):
     # idioma: usa o salvo no config, senão autodetecta pelo Windows (pt/en)
     i18n.set_lang(sysint.load_config().get("lang"))
     page.title = "Haylou S30 Pro"
-    page.window.width = 400
-    page.window.height = 860  # compacto: tudo cabe sem rolar
-    page.window.resizable = False
+    page.window.width = 430
+    page.window.height = 940  # alto o bastante pra mostrar até o now-playing sem cortar
+    page.window.min_width = 400
+    page.window.min_height = 600
+    page.window.resizable = True   # deixa o usuário esticar se quiser
     page.window.title_bar_hidden = False
     page.window.prevent_close = True  # fechar (X) esconde pro tray em vez de encerrar
     _theme = sysint.load_config().get("theme", "dark")  # tema salvo (dark|light)
@@ -610,7 +612,8 @@ def main(page: ft.Page):
         animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         tooltip=t("auto_hint"),
     )
-    auto_hint = ft.Text("", size=10, color=T.OK, italic=True)
+    auto_hint = ft.Text("", size=10, color=T.OK, italic=True,
+                        max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
 
     def paint_auto():
         on = state["auto"]
@@ -644,13 +647,14 @@ def main(page: ft.Page):
             if learned:
                 lmode, share, _total = learned
                 modo = lmode
-                motivo = f"você costuma usar {MODE_NAMES[lmode]} aqui ({int(share*100)}%)"
+                motivo = t("auto_habit", mode=MODE_NAMES[lmode], pct=int(share*100))
             if modo is not None and (force or modo != state["last_auto"]):
                 state["last_auto"] = modo
                 state["mode"] = modo
                 paint_hero(modo); paint_chips(modo)
-                auto_hint.value = f"🤖 {motivo} → {MODE_NAMES[modo]}"
-                set_status(f"AUTO: {MODE_NAMES[modo]} ({motivo})", T.OK)
+                # hint curto (não corta): só "AUTO → Modo". O motivo completo vai no status.
+                auto_hint.value = t("auto_applied", mode=MODE_NAMES[modo])
+                set_status(f"AUTO: {MODE_NAMES[modo]} · {motivo}", T.OK)
                 worker.send("anc", modo)
                 if game and not state["game"]:
                     game_switch.value = True; state["game"] = True
@@ -849,12 +853,18 @@ def main(page: ft.Page):
     def toggle_lang(e=None):
         new = "en" if i18n.get_lang() == "pt" else "pt"
         c = sysint.load_config(); c["lang"] = new; sysint.save_config(c)
-        # NÃO reinicia sozinho (re-exec do onefile dava erro de DLL). Avisa pra reabrir.
         i18n.set_lang(new)  # aplica já pros próximos textos/notificações
-        msg = ("Idioma alterado — feche e abra o app pra aplicar"
-               if new == "pt" else "Language changed — close and reopen the app to apply")
-        set_status(msg, T.WARN)
-        try: sysint.notify("Haylou S30 Pro", msg)
+        title = "Idioma alterado" if new == "pt" else "Language changed"
+        body = ("Feche e abra o app de novo pra aplicar o novo idioma."
+                if new == "pt" else "Close and reopen the app to apply the new language.")
+        # diálogo (não o status pequeno, que cortava o texto)
+        dlg = ft.AlertDialog(
+            modal=True, title=ft.Text(title),
+            content=ft.Text(body, size=13, width=320),
+            actions=[ft.TextButton("OK", on_click=lambda ev: _close_dialog(dlg))],
+        )
+        _show_dialog(dlg)
+        try: sysint.notify("Haylou S30 Pro", body)
         except Exception: pass
     lang_btn = ft.IconButton(ft.Icons.TRANSLATE, icon_size=18, icon_color=T.TXT_DIM,
                              tooltip=t("lang_tip"), on_click=toggle_lang)
@@ -1133,7 +1143,10 @@ def main(page: ft.Page):
                               t("tray_hint") if i18n else "Continua rodando na bandeja. Clique no ícone pra abrir; botão direito → Sair.")
             except Exception: pass
     def _on_window_event(e):
-        if e.data == "close":
+        # o .data pode vir como "close" (string) ou o enum WindowEventType.CLOSE —
+        # cobre as duas formas pra não falhar dependendo da versão do Flet
+        d = getattr(e, "data", None)
+        if d == "close" or str(d).lower().endswith("close"):
             hide_window()
     page.window.on_event = _on_window_event
 
