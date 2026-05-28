@@ -17,8 +17,7 @@ STRINGS = {
     "connecting":      ("conectando", "connecting"),
     "connected":       ("conectado", "connected"),
     "reconnecting":    ("reconectando…", "reconnecting…"),
-    "not_found":       ("fone não encontrado — ligue o Haylou e deixe perto",
-                        "headphones not found — turn on your Haylou and keep it close"),
+    "not_found":       ("fone não encontrado", "headphones not found"),
     "proto_unknown":   ("conectado, mas protocolo não reconhecido (firmware?)",
                         "connected, but protocol not recognized (firmware?)"),
     # modos ANC
@@ -57,13 +56,20 @@ STRINGS = {
     "eq_unavailable":  ("EQ APO indisponível", "EQ APO unavailable"),
     "eq_reapplied":    ("EQ reaplicado: {name}", "EQ reapplied: {name}"),
     "spatial":         ("Som Espacial (Windows)", "Spatial Sound (Windows)"),
+    # nomes de EQ (o valor real continua PT no winmedia; isto é só o display)
+    "eq_Padrão":       ("Padrão", "Default"),
+    "eq_Grave +":      ("Grave +", "Bass +"),
+    "eq_Vocal":        ("Vocal", "Vocal"),
+    "eq_Agudo +":      ("Agudo +", "Treble +"),
+    "eq_Cinema":       ("Cinema", "Cinema"),
+    "eq_Podcast":      ("Podcast", "Podcast"),
     "spatial_tip":     ("Abre o painel de Som Espacial do Windows (Sonic/Atmos)",
                         "Opens Windows Spatial Sound panel (Sonic/Atmos)"),
-    # cenários
-    "sc_focus":        ("🎯 Foco", "🎯 Focus"),
-    "sc_game":         ("🎮 Jogo", "🎮 Gaming"),
-    "sc_music":        ("🎧 Música", "🎧 Music"),
-    "sc_call":         ("🗣️ Call", "🗣️ Call"),
+    # cenários (o ícone já aparece ao lado; aqui só o texto)
+    "sc_focus":        ("Foco", "Focus"),
+    "sc_game":         ("Jogo", "Gaming"),
+    "sc_music":        ("Música", "Music"),
+    "sc_call":         ("Call", "Call"),
     # now playing / mídia
     "nothing_playing": ("nada tocando", "nothing playing"),
     # bateria

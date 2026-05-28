@@ -142,7 +142,7 @@ class BleWorker:
     async def _connect(self):
         if self.client and self.client.is_connected and self._has_control_service():
             return True
-        self.on_status("conectando", T.WARN)
+        self.on_status(t("connecting"), T.WARN)
         # 1) endereço conhecido. Passa BLEDevice (não string): no Windows o fone não
         #    anuncia BLE já-conectado-como-áudio; bleak 3.x com string faz um scan que
         #    falha. Com BLEDevice conecta direto via from_bluetooth_address.
@@ -153,7 +153,7 @@ class BleWorker:
                 try:
                     if await self._try_client(BLEDevice(self.addr, "HAYLOU S30", None),
                                               timeout=8.0, force_fresh=force_fresh):
-                        self.on_status("conectado", T.OK); return True
+                        self.on_status(t("connected"), T.OK); return True
                 except Exception: pass
         # fallback: escaneia e conecta no 1º fone Haylou (e lembra o endereço).
         try:
@@ -165,12 +165,12 @@ class BleWorker:
                             if self.on_device:
                                 try: self.on_device(d.address, getattr(d, "name", None))
                                 except Exception: pass
-                            self.on_status("conectado", T.OK); return True
+                            self.on_status(t("connected"), T.OK); return True
                     except Exception: pass
         except Exception: pass
         # chegou aqui = ou offline, ou no estado capado. Mensagem acionável: cobre
         # tanto a 1ª conexão (fone desligado/longe) quanto o estado travado.
-        self.on_status("fone não encontrado — ligue o Haylou e deixe perto", T.ANC); return False
+        self.on_status(t("not_found"), T.ANC); return False
 
     def _notify(self, _, data):
         b = bytes(data)
@@ -192,7 +192,7 @@ class BleWorker:
         mudo. Não bloqueia nada — só informa."""
         await asyncio.sleep(8)
         if self.client and self.client.is_connected and not self._valid_seen:
-            self.on_status("conectado, mas protocolo não reconhecido (firmware?)", T.WARN)
+            self.on_status(t("proto_unknown"), T.WARN)
 
     async def _poll_battery(self):
         """Watchdog: pede status periodicamente E reconecta sozinho se a conexão
@@ -217,7 +217,7 @@ class BleWorker:
                 continue
             if kind == "force_reconnect":
                 # botão "reconectar agora": derruba a conexão atual e refaz do zero
-                self.on_status("reconectando…", T.WARN)
+                self.on_status(t("reconnecting"), T.WARN)
                 try:
                     if self.client: await self.client.disconnect()
                 except Exception: pass
@@ -408,7 +408,8 @@ def main(page: ft.Page):
     batt_ring = ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.OK, visible=False)
     batt_text = ft.Text("—", size=13, color=T.WARN, weight=ft.FontWeight.W_700)
     status_dot = ft.Container(width=7, height=7, border_radius=99, bgcolor=T.TXT_FAINT)
-    status_lbl = ft.Text(t("starting"), size=11, color=T.TXT_DIM)
+    status_lbl = ft.Text(t("starting"), size=11, color=T.TXT_DIM,
+                         max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
 
     # ─── sparkline de bateria (últimas horas, 100% local) ───
     SPARK_BARS = 24  # nº de barras na sparkline
@@ -460,7 +461,7 @@ def main(page: ft.Page):
     eq_chips = {}
     def make_eq_chip(name):
         c = ft.Container(
-            content=ft.Text(name, size=11, weight=ft.FontWeight.W_600, color=T.TXT,
+            content=ft.Text(t(f"eq_{name}"), size=11, weight=ft.FontWeight.W_600, color=T.TXT,
                             text_align=ft.TextAlign.CENTER),
             padding=ft.Padding.symmetric(vertical=6, horizontal=12),
             border_radius=T.R_PILL, bgcolor=T.SURFACE2,
@@ -480,17 +481,17 @@ def main(page: ft.Page):
         eq_state["sel"] = name
         ok = wm.set_eq_apo(name)
         paint_eq()
-        set_status(t("eq_set", name=name) if ok else t("eq_unavailable"), T.OK if ok else T.ANC)
+        set_status(t("eq_set", name=t(f"eq_{name}")) if ok else t("eq_unavailable"), T.OK if ok else T.ANC)
         c = sysint.load_config(); c["eq"] = name; sysint.save_config(c)
     eq_chips_row = ft.Row([make_eq_chip(n) for n in eq_names], wrap=True, spacing=5, run_spacing=5)
 
     # ─── Perfis de cenário: 1 clique aplica um combo (modo + game + EQ) ───
     # Reaproveita on_anc/on_game/on_eq (não duplica lógica). EQ só aplica se existir o perfil.
     SCENARIOS = [
-        ("🎯 Foco",   ft.Icons.CENTER_FOCUS_STRONG, dict(anc=1, game=False, eq="Vocal")),
-        ("🎮 Jogo",    ft.Icons.SPORTS_ESPORTS,      dict(anc=0, game=True,  eq="Padrão")),
-        ("🎧 Música",  ft.Icons.MUSIC_NOTE,          dict(anc=1, game=False, eq="Padrão")),
-        ("🗣️ Call",    ft.Icons.HEADSET_MIC,         dict(anc=2, game=False, eq="Vocal")),
+        ("sc_focus", ft.Icons.CENTER_FOCUS_STRONG, dict(anc=1, game=False, eq="Vocal")),
+        ("sc_game",  ft.Icons.SPORTS_ESPORTS,      dict(anc=0, game=True,  eq="Padrão")),
+        ("sc_music", ft.Icons.MUSIC_NOTE,          dict(anc=1, game=False, eq="Padrão")),
+        ("sc_call",  ft.Icons.HEADSET_MIC,         dict(anc=2, game=False, eq="Vocal")),
     ]
     def apply_scenario(cfg):
         if cfg.get("anc") is not None:
@@ -503,10 +504,10 @@ def main(page: ft.Page):
             on_eq(cfg["eq"])
         try: page.update()
         except Exception: pass
-    def make_scenario_chip(label, icon, cfg):
+    def make_scenario_chip(label_key, icon, cfg):
         return ft.Container(
             content=ft.Row([ft.Icon(icon, size=14, color=T.TXT),
-                            ft.Text(label, size=11, weight=ft.FontWeight.W_600, color=T.TXT)],
+                            ft.Text(t(label_key), size=11, weight=ft.FontWeight.W_600, color=T.TXT)],
                            spacing=5, tight=True),
             padding=ft.Padding.symmetric(vertical=7, horizontal=12),
             border_radius=T.R_PILL, bgcolor=T.SURFACE2, border=ft.Border.all(1, T.BORDER),
@@ -841,16 +842,17 @@ def main(page: ft.Page):
         tooltip=t("theme_light") if _theme != "light" else t("theme_dark"),
         on_click=toggle_theme)
 
-    # ─── botão de idioma (PT ⇄ EN) — recarrega o app pra reaplicar tudo traduzido ───
+    # ─── botão de idioma (PT ⇄ EN) ───
+    # Salva o novo idioma e REINICIA o processo limpo (re-exec do mesmo .exe). Recriar a
+    # UI no mesmo processo duplicaria worker BLE / hotkeys / threads — re-exec é o jeito
+    # seguro de reaplicar a tradução sem deixar lixo rodando.
     def toggle_lang(e=None):
         new = "en" if i18n.get_lang() == "pt" else "pt"
         c = sysint.load_config(); c["lang"] = new; sysint.save_config(c)
-        i18n.set_lang(new)
-        # recria a UI do zero no novo idioma (mais simples e seguro que varrer tudo)
         try:
-            page.controls.clear(); page.overlay.clear(); main(page)
+            sysint.relaunch_self()
         except Exception:
-            set_status("reinicie o app pra trocar o idioma", T.WARN)
+            set_status("reabra o app pra trocar o idioma", T.WARN)
     lang_btn = ft.IconButton(ft.Icons.TRANSLATE, icon_size=18, icon_color=T.TXT_DIM,
                              tooltip=t("lang_tip"), on_click=toggle_lang)
 

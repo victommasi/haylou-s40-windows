@@ -61,6 +61,36 @@ def focus_existing_window(title: str = "Haylou S30 Pro") -> bool:
         pass
     return False
 
+def release_single_instance():
+    """Libera o mutex de instância única (pra um re-exec não bater na própria trava)."""
+    global _mutex_handle
+    try:
+        if _mutex_handle:
+            import ctypes
+            ctypes.windll.kernel32.ReleaseMutex(_mutex_handle)
+            ctypes.windll.kernel32.CloseHandle(_mutex_handle)
+            _mutex_handle = None
+    except Exception:
+        pass
+
+def relaunch_self():
+    """Reinicia o app limpo (re-exec). Usado pra trocar idioma sem deixar worker/
+    hotkeys/threads duplicados. Libera o mutex, sobe uma nova instância com um pequeno
+    atraso (pra esta sair antes) e encerra a atual."""
+    import subprocess
+    if getattr(sys, "frozen", False):
+        target = [sys.executable]                      # rodando como .exe
+    else:
+        target = [sys.executable, os.path.abspath(sys.argv[0])]  # dev: python script
+    release_single_instance()
+    # cmd que espera ~1.2s e então sobe o app de novo (dá tempo da atual encerrar)
+    if os.name == "nt":
+        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        quoted = " ".join(f'"{a}"' for a in target)
+        subprocess.Popen(f'timeout /t 2 /nobreak >nul & {quoted}',
+                         shell=True, creationflags=flags, close_fds=True)
+    os._exit(0)
+
 # ─── Notificação Windows (bateria baixa etc) ───
 def notify(title: str, msg: str):
     """Notificação toast do Windows (best-effort, sem travar)."""
