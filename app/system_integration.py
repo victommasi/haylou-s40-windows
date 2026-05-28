@@ -120,35 +120,60 @@ def _mode_icon_img(mode: int):
         d.text((22, 14), letter, fill=(255, 255, 255, 255), font=font)
     return img
 
-def make_tray(on_show, on_anc, on_transp, on_normal, on_quit, get_mode=lambda: 1):
+def _tray_t(key, fallback):
+    """Tradução pro tray sem acoplar forte: usa i18n se disponível, senão o fallback PT."""
+    try:
+        import i18n
+        return i18n.t(key)
+    except Exception:
+        return fallback
+
+def _tray_title(get_mode, get_batt):
+    """Tooltip do tray: modo + bateria (se conhecida)."""
+    mode = TRAY_MODE_NAMES.get(get_mode(), "")
+    batt = get_batt() if get_batt else None
+    suffix = f" · {batt}%" if isinstance(batt, int) else ""
+    return f"Haylou S30 Pro — {mode}{suffix}"
+
+def make_tray(on_show, on_anc, on_transp, on_normal, on_quit, get_mode=lambda: 1,
+              get_batt=None, on_cycle=None):
     """Cria ícone na bandeja refletindo o modo atual (cor+letra) com menu marcando
-    o modo ativo. `get_mode` retorna o modo atual (0/1/2). Retorna o objeto icon."""
+    o modo ativo. `get_mode` retorna o modo (0/1/2). `get_batt` retorna bateria %
+    (ou None) pro tooltip. `on_cycle` (opcional) é chamado no clique ESQUERDO do
+    ícone pra ciclar o ANC sem abrir a janela. Retorna o objeto icon."""
     import pystray
     def _is(m): return lambda item: get_mode() == m
+    # clique esquerdo no ícone cicla o ANC (se on_cycle dado); senão abre a janela.
+    default_action = (lambda i, it: on_cycle()) if on_cycle else (lambda i, it: on_show())
     menu = pystray.Menu(
-        pystray.MenuItem(lambda item: f"Modo: {TRAY_MODE_NAMES.get(get_mode(), '?')}",
+        pystray.MenuItem(lambda item: _tray_title(get_mode, get_batt),
                          lambda i, it: on_show(), enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Abrir Haylou", lambda i, it: on_show(), default=True),
+        pystray.MenuItem("Trocar ANC (clique no ícone)", default_action, default=True, visible=False),
+        pystray.MenuItem(_tray_t("tray_open", "Abrir Haylou"), lambda i, it: on_show()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("ANC", lambda i, it: on_anc(), checked=_is(1), radio=True),
         pystray.MenuItem("Transparência", lambda i, it: on_transp(), checked=_is(2), radio=True),
         pystray.MenuItem("Normal", lambda i, it: on_normal(), checked=_is(0), radio=True),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Sair", lambda i, it: on_quit()),
+        pystray.MenuItem(_tray_t("tray_quit", "Sair"), lambda i, it: on_quit()),
     )
     icon = pystray.Icon("haylou", _mode_icon_img(get_mode()),
-                        f"Haylou S30 Pro — {TRAY_MODE_NAMES.get(get_mode(), '')}", menu)
+                        _tray_title(get_mode, get_batt), menu)
     threading.Thread(target=icon.run, daemon=True).start()
     return icon
 
-def update_tray_mode(icon, mode: int):
-    """Atualiza o ícone da bandeja pro modo atual (cor+letra+tooltip+menu)."""
+def update_tray_mode(icon, mode: int, get_mode=None, get_batt=None):
+    """Atualiza o ícone da bandeja pro modo atual (cor+letra+tooltip+menu).
+    Passa get_mode/get_batt pra recompor o tooltip com bateria; sem eles, só o modo."""
     if not icon:
         return
     try:
         icon.icon = _mode_icon_img(mode)
-        icon.title = f"Haylou S30 Pro — {TRAY_MODE_NAMES.get(mode, '')}"
+        if get_mode:
+            icon.title = _tray_title(get_mode, get_batt)
+        else:
+            icon.title = f"Haylou S30 Pro — {TRAY_MODE_NAMES.get(mode, '')}"
         icon.update_menu()
     except Exception:
         pass

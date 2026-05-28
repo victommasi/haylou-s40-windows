@@ -56,6 +56,38 @@ def record(app: str, hour: int, mode: int):
     _save(d)
 
 
+MODE_LABELS = {0: "Normal", 1: "ANC", 2: "Transparência"}
+
+
+def summary() -> dict:
+    """Agrega TODO o histórico aprendido pra uma tela de estatísticas.
+    Retorna {total, by_mode: {nome: contagem}, top_apps: [(app, modo_preferido, n)]}.
+    Tudo local, só contagens — nada identificável."""
+    data = _load()
+    by_mode = {0: 0, 1: 0, 2: 0}
+    per_app = {}  # app -> {modo: contagem}
+    for key, slot in data.items():
+        app = key.split("|")[0]
+        for m, c in slot.items():
+            if m in ("0", "1", "2"):
+                mi, ci = int(m), int(c)
+                by_mode[mi] += ci
+                per_app.setdefault(app, {0: 0, 1: 0, 2: 0})[mi] += ci
+    total = sum(by_mode.values())
+    # top apps por uso total, com o modo preferido de cada
+    ranked = []
+    for app, modes in per_app.items():
+        n = sum(modes.values())
+        pref = max(modes.items(), key=lambda kv: kv[1])[0]
+        ranked.append((app, pref, n))
+    ranked.sort(key=lambda t: -t[2])
+    return {
+        "total": total,
+        "by_mode": {MODE_LABELS[m]: by_mode[m] for m in (0, 1, 2)},
+        "top_apps": ranked[:6],
+    }
+
+
 def predict(app: str, hour: int, min_samples: int = 3, min_share: float = 0.6):
     """Prevê o modo que o usuário costuma usar nesse (app, período).
     Só responde quando há histórico suficiente E uma preferência clara —

@@ -19,6 +19,10 @@ import haylou_protocol as proto
 import context_engine as ce
 import system_integration as sysint
 import usage_map as um
+import battery_log as blog
+import updater
+import i18n
+from i18n import t
 
 CF_WRITE  = "0000cf05-0000-1000-8000-00805f9b34fb"
 CF_NOTIFY = "0000cf06-0000-1000-8000-00805f9b34fb"
@@ -62,12 +66,23 @@ def apply_palette(name: str):
 
 apply_palette("dark")  # default no import; main() reaplica conforme o config
 
-ANC_MODES = [
-    ("ANC",            1, T.ANC,    ft.Icons.NOISE_CONTROL_OFF, "Cancelamento de ruído"),
-    ("Transparência",  2, T.TRANSP, ft.Icons.HEARING,           "Ouve o ambiente"),
-    ("Normal",         0, T.NORMAL, ft.Icons.MUSIC_NOTE,        "Sem processamento"),
-]
-MODE_NAMES = {0:"Normal",1:"ANC",2:"Transparência"}
+# chave i18n por modo (nome e descrição traduzidos na hora do acesso)
+_MODE_KEY  = {0: "normal", 1: "anc", 2: "transparency"}
+_MODE_DESC = {0: "normal_desc", 1: "anc_desc", 2: "transp_desc"}
+
+class _ModeNames:
+    """dict-like: MODE_NAMES[m] devolve o nome do modo traduzido no idioma atual."""
+    def __getitem__(self, m): return t(_MODE_KEY.get(m, "anc"))
+    def get(self, m, default=""): return t(_MODE_KEY[m]) if m in _MODE_KEY else default
+MODE_NAMES = _ModeNames()
+
+def anc_modes():
+    """Lista (nome, modo, cor, ícone, descrição) com textos traduzidos."""
+    return [
+        (t("anc"),          1, T.ANC,    ft.Icons.NOISE_CONTROL_OFF, t("anc_desc")),
+        (t("transparency"), 2, T.TRANSP, ft.Icons.HEARING,           t("transp_desc")),
+        (t("normal"),       0, T.NORMAL, ft.Icons.MUSIC_NOTE,        t("normal_desc")),
+    ]
 MODE_COLOR = {1:T.ANC, 2:T.TRANSP, 0:T.NORMAL}
 MODE_ICON  = {1:ft.Icons.NOISE_CONTROL_OFF, 2:ft.Icons.HEARING, 0:ft.Icons.MUSIC_NOTE}
 
@@ -200,6 +215,15 @@ class BleWorker:
                 if not (self.client and self.client.is_connected and self._has_control_service()):
                     await self._connect()
                 continue
+            if kind == "force_reconnect":
+                # botão "reconectar agora": derruba a conexão atual e refaz do zero
+                self.on_status("reconectando…", T.WARN)
+                try:
+                    if self.client: await self.client.disconnect()
+                except Exception: pass
+                self.client = None
+                if await self._connect(): await self._status()
+                continue
             if not await self._connect(): continue
             try:
                 if kind == "anc":
@@ -232,11 +256,14 @@ def main(page: ft.Page):
     # define um AppUserModelID proprio ANTES da janela aparecer, pra a barra de
     # tarefas usar o icone do app (s30.ico) em vez do icone generico do Flet.
     sysint.set_app_user_model_id()
+    # idioma: usa o salvo no config, senão autodetecta pelo Windows (pt/en)
+    i18n.set_lang(sysint.load_config().get("lang"))
     page.title = "Haylou S30 Pro"
     page.window.width = 400
     page.window.height = 860  # compacto: tudo cabe sem rolar
     page.window.resizable = False
     page.window.title_bar_hidden = False
+    page.window.prevent_close = True  # fechar (X) esconde pro tray em vez de encerrar
     _theme = sysint.load_config().get("theme", "dark")  # tema salvo (dark|light)
     apply_palette(_theme)
     page.bgcolor = T.BG
@@ -270,12 +297,12 @@ def main(page: ft.Page):
     # hero sempre tem fundo de cor de modo (accent) → texto branco em ambos os temas.
     # uso "#FEFEFE" (branco-sentinela) pra varredura de tema NÃO trocar pra preto no light.
     hero_icon = ft.Icon(MODE_ICON[1], color="#FEFEFE", size=34)
-    hero_name = ft.Text("ANC", size=22, weight=ft.FontWeight.W_800, color="#FEFEFE")
-    hero_desc = ft.Text("Cancelamento de ruído", size=12, color="#FEFEFE", opacity=0.7)
+    hero_name = ft.Text(t("anc"), size=22, weight=ft.FontWeight.W_800, color="#FEFEFE")
+    hero_desc = ft.Text(t("anc_desc"), size=12, color="#FEFEFE", opacity=0.7)
     hero_lock = ft.Container(
         content=ft.Icon(ft.Icons.LOCK_OPEN, color="#FEFEFE", size=20),
         ink=True, on_click=lambda e: toggle_lock(), padding=6, border_radius=99,
-        tooltip="Travar o modo (impede a IA de trocar)",
+        tooltip=t("lock_tip"),
         opacity=0.6,
     )
     hero = ft.Container(
@@ -303,7 +330,7 @@ def main(page: ft.Page):
 
     def toggle_lock():
         set_lock(not state["mode_locked"])
-        set_status("Modo travado — a IA não troca mais" if state["mode_locked"] else "Modo destravado",
+        set_status(t("mode_locked") if state["mode_locked"] else t("mode_unlocked"),
                    T.WARN if state["mode_locked"] else T.TXT_DIM)
 
     def paint_hero(modo):
@@ -312,8 +339,9 @@ def main(page: ft.Page):
         hero.shadow = ft.BoxShadow(blur_radius=34, spread_radius=-6, color=c, offset=ft.Offset(0, 8))
         hero_icon.name = MODE_ICON[modo]
         hero_name.value = MODE_NAMES[modo]
-        hero_desc.value = next((d for n,m,col,i,d in ANC_MODES if m==modo), "")
-        sysint.update_tray_mode(tray["icon"], modo)  # reflete o modo no ícone da bandeja
+        hero_desc.value = next((d for n,m,col,i,d in anc_modes() if m==modo), "")
+        sysint.update_tray_mode(tray["icon"], modo,  # reflete modo+bateria no tray
+                                get_mode=lambda: state["mode"], get_batt=lambda: state["batt"])
         page.update()
 
     # ─── chips de modo (compactos, abaixo do hero) ───
@@ -380,7 +408,33 @@ def main(page: ft.Page):
     batt_ring = ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.OK, visible=False)
     batt_text = ft.Text("—", size=13, color=T.WARN, weight=ft.FontWeight.W_700)
     status_dot = ft.Container(width=7, height=7, border_radius=99, bgcolor=T.TXT_FAINT)
-    status_lbl = ft.Text("iniciando", size=11, color=T.TXT_DIM)
+    status_lbl = ft.Text(t("starting"), size=11, color=T.TXT_DIM)
+
+    # ─── sparkline de bateria (últimas horas, 100% local) ───
+    SPARK_BARS = 24  # nº de barras na sparkline
+    batt_spark = ft.Row([], spacing=1, alignment=ft.MainAxisAlignment.END,
+                        vertical_alignment=ft.CrossAxisAlignment.END, height=14)
+    def paint_batt_spark():
+        """Redesenha a sparkline a partir do histórico local. Mostra as últimas
+        SPARK_BARS leituras (reamostradas); altura da barra = % da bateria."""
+        try:
+            vals = blog.series()
+        except Exception:
+            vals = []
+        batt_spark.controls.clear()
+        if len(vals) < 2:
+            batt_spark.visible = False
+            return
+        # reamostra pra no máximo SPARK_BARS pontos (pega os mais recentes, espaçados)
+        if len(vals) > SPARK_BARS:
+            step = len(vals) / SPARK_BARS
+            vals = [vals[int(i * step)] for i in range(SPARK_BARS)]
+        batt_spark.visible = True
+        for v in vals:
+            h = max(2, round(v / 100 * 12))  # 2..12 px
+            col = T.OK if v > 30 else T.ANC
+            batt_spark.controls.append(
+                ft.Container(width=3, height=h, bgcolor=col, border_radius=1))
 
     # ─── Game Mode ───
     game_switch = ft.Switch(value=False, active_color=T.OK, on_change=lambda e: on_game(e))
@@ -388,7 +442,7 @@ def main(page: ft.Page):
         on = e.control.value
         mark_touch("game")
         _persist("last_game", on)
-        set_status(f"Game Mode {'ON' if on else 'OFF'}", T.WARN)
+        set_status(t("game_on") if on else t("game_off"), T.WARN)
         worker.send("game", 1 if on else 0)
 
     # ─── Anti-leak (hardware, confirmado) ───
@@ -397,7 +451,7 @@ def main(page: ft.Page):
         on = e.control.value
         mark_touch("leak")
         _persist("last_leak", on)
-        set_status(f"Anti-vazamento {'ON' if on else 'OFF'}", T.WARN)
+        set_status(t("antileak_on") if on else t("antileak_off"), T.WARN)
         worker.send("leak", 1 if on else 0)
 
     # ─── EQ APO em CHIPS (software, supre o EQ que o fone não tem) ───
@@ -426,9 +480,40 @@ def main(page: ft.Page):
         eq_state["sel"] = name
         ok = wm.set_eq_apo(name)
         paint_eq()
-        set_status(f"EQ: {name}" if ok else "EQ APO indisponível", T.OK if ok else T.ANC)
+        set_status(t("eq_set", name=name) if ok else t("eq_unavailable"), T.OK if ok else T.ANC)
         c = sysint.load_config(); c["eq"] = name; sysint.save_config(c)
     eq_chips_row = ft.Row([make_eq_chip(n) for n in eq_names], wrap=True, spacing=5, run_spacing=5)
+
+    # ─── Perfis de cenário: 1 clique aplica um combo (modo + game + EQ) ───
+    # Reaproveita on_anc/on_game/on_eq (não duplica lógica). EQ só aplica se existir o perfil.
+    SCENARIOS = [
+        ("🎯 Foco",   ft.Icons.CENTER_FOCUS_STRONG, dict(anc=1, game=False, eq="Vocal")),
+        ("🎮 Jogo",    ft.Icons.SPORTS_ESPORTS,      dict(anc=0, game=True,  eq="Padrão")),
+        ("🎧 Música",  ft.Icons.MUSIC_NOTE,          dict(anc=1, game=False, eq="Padrão")),
+        ("🗣️ Call",    ft.Icons.HEADSET_MIC,         dict(anc=2, game=False, eq="Vocal")),
+    ]
+    def apply_scenario(cfg):
+        if cfg.get("anc") is not None:
+            on_anc(cfg["anc"])
+        if cfg.get("game") is not None:
+            mark_touch("game"); game_switch.value = bool(cfg["game"])
+            _persist("last_game", bool(cfg["game"]))
+            worker.send("game", 1 if cfg["game"] else 0)
+        if cfg.get("eq") in wm.EQ_PROFILES:
+            on_eq(cfg["eq"])
+        try: page.update()
+        except Exception: pass
+    def make_scenario_chip(label, icon, cfg):
+        return ft.Container(
+            content=ft.Row([ft.Icon(icon, size=14, color=T.TXT),
+                            ft.Text(label, size=11, weight=ft.FontWeight.W_600, color=T.TXT)],
+                           spacing=5, tight=True),
+            padding=ft.Padding.symmetric(vertical=7, horizontal=12),
+            border_radius=T.R_PILL, bgcolor=T.SURFACE2, border=ft.Border.all(1, T.BORDER),
+            ink=True, on_click=lambda e, c=cfg: apply_scenario(c),
+        )
+    scenarios_row = ft.Row([make_scenario_chip(l, i, c) for l, i, c in SCENARIOS],
+                           wrap=True, spacing=5, run_spacing=5)
 
     # ─── Now playing (com equalizer animado) ───
     eq_bars = [ft.Container(width=3, height=h, bgcolor=T.OK, border_radius=2,
@@ -437,7 +522,7 @@ def main(page: ft.Page):
     eq_row = ft.Row(eq_bars, spacing=2, alignment=ft.MainAxisAlignment.CENTER,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER)
     np_app = ft.Text("—", size=10, color=T.TXT_FAINT, weight=ft.FontWeight.W_700)
-    np_title = ft.Text("nada tocando", size=13, color=T.TXT, weight=ft.FontWeight.W_600,
+    np_title = ft.Text(t("nothing_playing"), size=13, color=T.TXT, weight=ft.FontWeight.W_600,
                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
     np_playing = {"v": False}
 
@@ -522,7 +607,7 @@ def main(page: ft.Page):
         border=ft.Border.all(2, T.SURFACE), ink=True,
         on_click=lambda e: toggle_auto(),
         animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
-        tooltip="IA escolhe o modo pelo contexto (música→ANC, call→Transparência, jogo→Game)",
+        tooltip=t("auto_hint"),
     )
     auto_hint = ft.Text("", size=10, color=T.OK, italic=True)
 
@@ -541,10 +626,10 @@ def main(page: ft.Page):
         if state["auto"]:
             if state["mode_locked"]:
                 set_lock(False)  # ligar a IA destrava o modo (o user quer ela no comando)
-            set_status("AUTO ligado — IA no comando", T.OK)
+            set_status(t("auto_on"), T.OK)
             threading.Thread(target=lambda: _auto_tick(force=True), daemon=True).start()
         else:
-            set_status("AUTO desligado — manual", T.TXT_DIM)
+            set_status(t("auto_off"), T.TXT_DIM)
 
     def _auto_tick(force=False):
         """aplica o modo sugerido pelo contexto (se AUTO ligado e o modo não estiver travado)"""
@@ -597,9 +682,16 @@ def main(page: ft.Page):
         try: page.update()
         except Exception: pass
     def set_batt(pct):
+        state["batt"] = pct
         batt_text.value = f"{pct}%"
         batt_text.color = T.OK if pct > 30 else T.ANC
+        try: blog.record(pct); paint_batt_spark()  # histórico + sparkline
+        except Exception: pass
         try: page.update()
+        except Exception: pass
+        # atualiza o tooltip do tray com a bateria nova
+        try: sysint.update_tray_mode(tray["icon"], state["mode"],
+                                     get_mode=lambda: state["mode"], get_batt=lambda: state["batt"])
         except Exception: pass
     def set_mode_from_device(modo):
         if is_locked("anc"): return  # user acabou de trocar — não sobrescreve
@@ -634,9 +726,7 @@ def main(page: ft.Page):
         visible=not cfg0.get("onboarded", False),
         content=ft.Row([
             ft.Icon(ft.Icons.TIPS_AND_UPDATES, color=T.WARN, size=18),
-            ft.Text("Ligue seu Haylou e deixe perto do PC. Ctrl+Alt+A cicla o ANC de qualquer lugar; "
-                    "o AUTO troca o modo conforme o que você faz.",
-                    size=11, color=T.TXT_DIM, expand=True),
+            ft.Text(t("onboard"), size=11, color=T.TXT_DIM, expand=True),
             ft.Container(content=ft.Icon(ft.Icons.CLOSE, color=T.TXT_FAINT, size=16),
                          ink=True, on_click=lambda e: dismiss_onboard(), padding=4, border_radius=99),
         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -649,17 +739,38 @@ def main(page: ft.Page):
         c = sysint.load_config(); c["onboarded"] = True; sysint.save_config(c)
         page.update()
 
+    # ─── Banner de atualização disponível (preenchido pelo check em background) ───
+    import webbrowser
+    update_lbl = ft.Text("", size=11, color=T.TXT, expand=True, weight=ft.FontWeight.W_600)
+    update_banner = ft.Container(
+        visible=False,
+        content=ft.Row([
+            ft.Icon(ft.Icons.SYSTEM_UPDATE, color=T.OK, size=18),
+            update_lbl,
+            ft.Container(content=ft.Icon(ft.Icons.CLOSE, color=T.TXT_FAINT, size=16),
+                         ink=True, on_click=lambda e: _dismiss_update(), padding=4, border_radius=99),
+        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(vertical=10, horizontal=14),
+        border_radius=12, bgcolor=ft.Colors.with_opacity(0.10, T.OK),
+        border=ft.Border.all(1, ft.Colors.with_opacity(0.28, T.OK)),
+        ink=True, on_click=lambda e: webbrowser.open(updater.RELEASES_PAGE),
+        tooltip="Abrir a página de download",
+    )
+    def _dismiss_update():
+        update_banner.visible = False
+        page.update()
+
     # ─── botão settings (auto-start) ───
     autostart_on = {"v": sysint.is_autostart_enabled()}
     def toggle_autostart(e):
         autostart_on["v"] = not autostart_on["v"]
         ok = sysint.set_autostart(autostart_on["v"])
         settings_btn.icon_color = T.OK if (autostart_on["v"] and ok) else T.TXT_FAINT
-        set_status("Abre no boot: " + ("ON" if autostart_on["v"] else "OFF"), T.OK)
+        set_status(t("autostart_set", on="ON" if autostart_on["v"] else "OFF"), T.OK)
         page.update()
     settings_btn = ft.IconButton(ft.Icons.ROCKET_LAUNCH, icon_size=18,
                                  icon_color=T.OK if autostart_on["v"] else T.TXT_FAINT,
-                                 tooltip="Abrir junto com o Windows", on_click=toggle_autostart)
+                                 tooltip=t("autostart_tip"), on_click=toggle_autostart)
 
     # ─── TEMA dark ⇄ light (toggle instantâneo) ───
     # Recolor por varredura: troca SÓ as cores do tema na árvore já montada — não
@@ -717,8 +828,8 @@ def main(page: ft.Page):
         cfg_t = sysint.load_config(); cfg_t["theme"] = name; sysint.save_config(cfg_t)
         is_dark = (name != "light")
         theme_btn.icon = ft.Icons.LIGHT_MODE if is_dark else ft.Icons.DARK_MODE
-        theme_btn.tooltip = "Tema claro" if is_dark else "Tema escuro"
-        set_status("Tema claro ☀️" if not is_dark else "Tema escuro 🌙", T.TXT_DIM)
+        theme_btn.tooltip = t("theme_light") if is_dark else t("theme_dark")
+        set_status(t("theme_light_set") if not is_dark else t("theme_dark_set"), T.TXT_DIM)
         page.update()
 
     def toggle_theme(e):
@@ -727,13 +838,75 @@ def main(page: ft.Page):
     theme_btn = ft.IconButton(
         ft.Icons.LIGHT_MODE if _theme != "light" else ft.Icons.DARK_MODE,
         icon_size=18, icon_color=T.TXT_DIM,
-        tooltip="Tema claro" if _theme != "light" else "Tema escuro",
+        tooltip=t("theme_light") if _theme != "light" else t("theme_dark"),
         on_click=toggle_theme)
+
+    # ─── botão de idioma (PT ⇄ EN) — recarrega o app pra reaplicar tudo traduzido ───
+    def toggle_lang(e=None):
+        new = "en" if i18n.get_lang() == "pt" else "pt"
+        c = sysint.load_config(); c["lang"] = new; sysint.save_config(c)
+        i18n.set_lang(new)
+        # recria a UI do zero no novo idioma (mais simples e seguro que varrer tudo)
+        try:
+            page.controls.clear(); page.overlay.clear(); main(page)
+        except Exception:
+            set_status("reinicie o app pra trocar o idioma", T.WARN)
+    lang_btn = ft.IconButton(ft.Icons.TRANSLATE, icon_size=18, icon_color=T.TXT_DIM,
+                             tooltip=t("lang_tip"), on_click=toggle_lang)
+
+    # ─── botão reconectar (força nova conexão BLE na hora) ───
+    def do_reconnect(e=None):
+        set_status(t("reconnecting"), T.WARN)
+        worker.send("force_reconnect")
+    reconnect_btn = ft.IconButton(ft.Icons.REFRESH, icon_size=18, icon_color=T.TXT_DIM,
+                                  tooltip=t("reconnect_tip"), on_click=do_reconnect)
+
+    # ─── helpers de dialog (Flet 0.85: overlay + open flag) ───
+    def _show_dialog(dlg):
+        if dlg not in page.overlay:
+            page.overlay.append(dlg)
+        dlg.open = True; page.update()
+    def _close_dialog(dlg):
+        dlg.open = False; page.update()
+
+    # ─── ESTATÍSTICAS de uso (do aprendizado local) ───
+    def open_stats(e=None):
+        try: s = um.summary()
+        except Exception: s = {"total": 0, "by_mode": {}, "top_apps": []}
+        rows = []
+        if s["total"] == 0:
+            rows.append(ft.Text(t("stats_empty"), size=12, color=T.TXT_DIM))
+        else:
+            rows.append(ft.Text(t("stats_total", n=s["total"]), size=11, color=T.TXT_FAINT))
+            for nome, n in s["by_mode"].items():
+                pct = round(n / s["total"] * 100) if s["total"] else 0
+                rows.append(ft.Row([
+                    ft.Text(nome, size=12, color=T.TXT, width=110),
+                    ft.Container(height=8, width=max(4, pct * 1.6), bgcolor=T.TRANSP, border_radius=4),
+                    ft.Text(f"{pct}%", size=11, color=T.TXT_DIM),
+                ], spacing=8))
+            if s["top_apps"]:
+                rows.append(ft.Text(t("stats_top_apps"), size=11,
+                                    color=T.TXT_FAINT, weight=ft.FontWeight.W_700))
+                for app, pref, n in s["top_apps"]:
+                    rows.append(ft.Text(f"• {app} → {um.MODE_LABELS.get(pref,'?')} ({n}x)",
+                                        size=12, color=T.TXT))
+        dlg = ft.AlertDialog(
+            modal=True, title=ft.Text(t("stats_title")),
+            content=ft.Column(rows, tight=True, spacing=8, width=360, scroll=ft.ScrollMode.AUTO),
+            actions=[ft.TextButton(t("close"), on_click=lambda ev: _close_dialog(dlg))],
+        )
+        _show_dialog(dlg)
+    stats_btn = ft.IconButton(ft.Icons.INSIGHTS, icon_size=18, icon_color=T.TXT_DIM,
+                              tooltip=t("stats_tip"), on_click=open_stats)
 
     root = ft.Container(
         opacity=0,  # fade-in na abertura
         animate_opacity=ft.Animation(400, ft.AnimationCurve.EASE_OUT),
         content=ft.Column([
+            # banners (update disponível / dica de 1ª vez) — escondidos por padrão
+            update_banner,
+            onboard_banner,
             # topbar: foto + nome + bateria/status + settings
             ft.Row([
                 ft.Image(src=img_path, width=46, height=46, fit=ft.BoxFit.CONTAIN),
@@ -744,18 +917,22 @@ def main(page: ft.Page):
                 ft.Column([
                     ft.Row([ft.Icon(ft.Icons.BATTERY_FULL, color=T.WARN, size=16), batt_text],
                            spacing=3, tight=True),
-                    ft.Row([theme_btn, settings_btn], spacing=0, tight=True),
-                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END, tight=True),
+                    batt_spark,  # sparkline da bateria (últimas horas)
+                    ft.Row([lang_btn, stats_btn, reconnect_btn, theme_btn, settings_btn], spacing=0, tight=True),
+                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.END, tight=True),
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
 
             # linha AUTO (heurística local de contexto)
             ft.Row([auto_badge, auto_hint], spacing=10,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
 
+            # perfis de cenário (presets de 1 clique)
+            scenarios_row,
+
             hero,
 
             # chips de modo
-            ft.Row([make_chip(n, m, c, i, d) for n, m, c, i, d in ANC_MODES],
+            ft.Row([make_chip(n, m, c, i, d) for n, m, c, i, d in anc_modes()],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
 
             # game mode
@@ -763,8 +940,8 @@ def main(page: ft.Page):
                 content=ft.Row([
                     ft.Row([ft.Icon(ft.Icons.SPORTS_ESPORTS, color=T.TXT_DIM, size=20),
                             ft.Column([
-                                ft.Text("Game Mode", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
-                                ft.Text("baixa latência", size=10, color=T.TXT_FAINT),
+                                ft.Text(t("game_mode"), size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                                ft.Text(t("low_latency"), size=10, color=T.TXT_FAINT),
                             ], spacing=0, tight=True)], spacing=12),
                     game_switch,
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
@@ -773,17 +950,16 @@ def main(page: ft.Page):
             ),
 
             # ─── ÁUDIO DO PC (EQ + anti-leak + spatial) ───
-            section("Áudio",
+            section(t("audio"),
                 ft.Column([
-                    ft.Text("Equalizador do PC", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
-                    ft.Text("via Equalizer APO — vale toda saída do PC, não fica salvo no fone",
-                            size=10, color=T.TXT_FAINT),
+                    ft.Text(t("pc_eq"), size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                    ft.Text(t("pc_eq_desc"), size=10, color=T.TXT_FAINT),
                     eq_chips_row,
                 ], spacing=8, tight=True),
                 ft.Row([
                     ft.Column([
-                        ft.Text("Anti-vazamento", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
-                        ft.Text("reduz som que escapa do fone", size=10, color=T.TXT_FAINT),
+                        ft.Text(t("antileak"), size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                        ft.Text(t("antileak_desc"), size=10, color=T.TXT_FAINT),
                     ], spacing=0, tight=True, expand=True),
                     leak_switch,
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -791,11 +967,11 @@ def main(page: ft.Page):
                 ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.SURROUND_SOUND, color=T.TRANSP, size=18),
-                        ft.Text("Som Espacial (Windows)", size=12, color=T.TRANSP, weight=ft.FontWeight.W_600),
+                        ft.Text(t("spatial"), size=12, color=T.TRANSP, weight=ft.FontWeight.W_600),
                     ], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
                     on_click=lambda e: wm.toggle_spatial_panel(), ink=True,
                     padding=ft.Padding.symmetric(vertical=8, horizontal=0), border_radius=10,
-                    tooltip="Abre o painel de Som Espacial do Windows (Sonic/Atmos)",
+                    tooltip=t("spatial_tip"),
                 ),
             ),
 
@@ -863,6 +1039,18 @@ def main(page: ft.Page):
     threading.Thread(target=_auto_loop, daemon=True).start()
     threading.Thread(target=_ctx_sampler, daemon=True).start()
 
+    # ─── verifica atualização no GitHub (background, silencioso se offline) ───
+    def _check_update():
+        time.sleep(3)  # não atrasa a abertura
+        try:
+            has_new, tag = updater.check()
+            if has_new:
+                update_banner.visible = True
+                update_lbl.value = t("update_avail", tag=tag)
+                page.update()
+        except Exception: pass
+    threading.Thread(target=_check_update, daemon=True).start()
+
     # ─── PERSISTÊNCIA: restaura último EQ salvo (chips já salvam no on_eq) ───
     cfg = sysint.load_config()
     if cfg.get("eq") in wm.EQ_PROFILES:
@@ -892,19 +1080,29 @@ def main(page: ft.Page):
         _orig_set_batt(pct)
         if pct <= 10 and not batt_warned["crit"]:
             batt_warned["crit"] = True; batt_warned["low"] = True
-            sysint.notify("Haylou S30 Pro", f"Bateria crítica: {pct}% — carregue o fone")
+            sysint.notify("Haylou S30 Pro", t("batt_crit", pct=pct))
         elif pct <= 20 and not batt_warned["low"]:
             batt_warned["low"] = True
-            sysint.notify("Haylou S30 Pro", f"Bateria baixa: {pct}%")
+            sysint.notify("Haylou S30 Pro", t("batt_low", pct=pct))
         elif pct > 30:
             batt_warned["low"] = False; batt_warned["crit"] = False
     worker.on_batt = set_batt  # reaponta pro wrapper
 
-    # ─── HOTKEY GLOBAL: Ctrl+Alt+A cicla ANC → Transparência → Normal ───
+    # ─── HOTKEYS GLOBAIS ───
+    # Ctrl+Alt+A cicla ANC→Transparência→Normal. Atalhos diretos pra cada modo e Game,
+    # pra trocar de qualquer lugar sem ciclar. Falha de uma não impede as outras.
     def cycle_anc():
         nxt = {1: 2, 2: 0, 0: 1}.get(state["mode"], 1)
         on_anc(nxt)
+    def toggle_game_hotkey():
+        new = not game_switch.value
+        game_switch.value = new
+        on_game(type("E", (), {"control": game_switch})())  # reusa o handler real
     sysint.register_hotkey("ctrl+alt+a", cycle_anc)
+    sysint.register_hotkey("ctrl+alt+1", lambda: on_anc(1))  # ANC
+    sysint.register_hotkey("ctrl+alt+2", lambda: on_anc(2))  # Transparência
+    sysint.register_hotkey("ctrl+alt+0", lambda: on_anc(0))  # Normal
+    sysint.register_hotkey("ctrl+alt+g", toggle_game_hotkey)  # Game on/off
 
     # ─── SYSTEM TRAY: menu rápido (clicar abre, ações trocam modo) ───
     def show_window():
@@ -915,6 +1113,17 @@ def main(page: ft.Page):
         except Exception: pass
     def quit_app():
         import os as _os; _os._exit(0)
+
+    # ─── fechar (X) esconde pro tray em vez de encerrar (sair = menu do tray) ───
+    def hide_window():
+        try:
+            page.window.visible = False; page.update()
+        except Exception: pass
+    def _on_window_event(e):
+        if e.data == "close":
+            hide_window()
+    page.window.on_event = _on_window_event
+
     try:
         tray["icon"] = sysint.make_tray(
             on_show=show_window,
@@ -923,6 +1132,8 @@ def main(page: ft.Page):
             on_normal=lambda: on_anc(0),
             on_quit=quit_app,
             get_mode=lambda: state["mode"],
+            get_batt=lambda: state["batt"],     # bateria no tooltip
+            on_cycle=cycle_anc,                  # clique no ícone cicla o ANC
         )
     except Exception:
         pass  # tray é bônus — se falhar, app segue normal
