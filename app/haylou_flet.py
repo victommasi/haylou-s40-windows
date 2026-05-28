@@ -1121,19 +1121,34 @@ def main(page: ft.Page):
 
     # ─── SYSTEM TRAY: menu rápido (clicar abre, ações trocam modo) ───
     def show_window():
-        try:
-            page.window.visible = True
-            page.window.minimized = False
-            page.window.to_front(); page.update()
-        except Exception: pass
+        # chamado de uma thread do pystray → faz só set de propriedades + update
+        # (to_front é async no Flet 0.85; não chamamos daqui). Reaplica algumas vezes
+        # porque o backend pode demorar a processar o 'visible'.
+        def _do():
+            for _ in range(3):
+                try:
+                    page.window.skip_task_bar = False
+                    page.window.visible = True
+                    page.window.minimized = False
+                    page.update()
+                except Exception: pass
+                time.sleep(0.15)
+            # traz pra frente via WinAPI (não depende do método async do Flet)
+            try: sysint.focus_existing_window("Haylou S30 Pro")
+            except Exception: pass
+        threading.Thread(target=_do, daemon=True).start()
     def quit_app():
         import os as _os; _os._exit(0)
 
     # ─── fechar (X) esconde pro tray em vez de encerrar (sair = menu do tray) ───
     # Na 1ª vez avisa que continua no tray (senão parece que travou). Depois fica quieto.
     def hide_window():
+        # esconde da barra de tarefas mas mantém a janela viva (mais fácil de
+        # trazer de volta que visible=False, que pode soltar o HWND).
         try:
-            page.window.visible = False; page.update()
+            page.window.skip_task_bar = True
+            page.window.visible = False
+            page.update()
         except Exception: pass
         c = sysint.load_config()
         if not c.get("tray_hint_shown"):
@@ -1143,10 +1158,11 @@ def main(page: ft.Page):
                               t("tray_hint") if i18n else "Continua rodando na bandeja. Clique no ícone pra abrir; botão direito → Sair.")
             except Exception: pass
     def _on_window_event(e):
-        # o .data pode vir como "close" (string) ou o enum WindowEventType.CLOSE —
-        # cobre as duas formas pra não falhar dependendo da versão do Flet
-        d = getattr(e, "data", None)
-        if d == "close" or str(d).lower().endswith("close"):
+        # Flet 0.85: o evento usa e.type (WindowEventType), cujo value é "close".
+        # (versões antigas usavam e.data — cobrimos as duas pra robustez)
+        et = getattr(e, "type", None)
+        val = getattr(et, "value", et)  # enum -> "close"
+        if val == "close" or getattr(e, "data", None) == "close":
             hide_window()
     page.window.on_event = _on_window_event
 
