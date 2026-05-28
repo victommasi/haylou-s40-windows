@@ -229,6 +229,9 @@ class BleWorker:
 # ═══════════════════ UI PREMIUM ═══════════════════
 def main(page: ft.Page):
     import os
+    # define um AppUserModelID proprio ANTES da janela aparecer, pra a barra de
+    # tarefas usar o icone do app (s30.ico) em vez do icone generico do Flet.
+    sysint.set_app_user_model_id()
     page.title = "Haylou S30 Pro"
     page.window.width = 400
     page.window.height = 860  # compacto: tudo cabe sem rolar

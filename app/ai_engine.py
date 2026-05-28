@@ -1,5 +1,5 @@
 """
-Motor de IA do app — Google Gemini 2.0 Flash (free tier, BYO key).
+Motor de IA do app — Google Gemini 2.5 Flash (free tier, BYO key).
 
 Por que Gemini Flash: tem free tier real (sem cartão), rápido, e entende PT-BR
 nativamente. A chave é do usuário (BYO) porque o repo é público — nunca embutir
@@ -15,7 +15,7 @@ import json
 import urllib.request
 import urllib.error
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 _ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
              "{model}:generateContent?key={key}")
 GET_KEY_URL = "https://aistudio.google.com/app/apikey"  # chave grátis, sem cartão

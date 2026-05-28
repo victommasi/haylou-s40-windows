@@ -154,6 +154,18 @@ def update_tray_mode(icon, mode: int):
         pass
 
 # ─── Ícone da janela (titlebar + taskbar) ───
+def set_app_user_model_id(app_id: str = "RevoluteDigital.HaylouS30Pro"):
+    """Define o AppUserModelID do processo. Sem isso o Windows agrupa o app pelo
+    processo do Flet e mostra o ícone genérico do Flet na BARRA DE TAREFAS (mesmo
+    com o ícone da janela já trocado). Com um ID próprio, a taskbar usa o ícone
+    da janela (s30.ico). Tem que ser chamado ANTES da janela aparecer."""
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
+
+
 def set_window_icon(title: str, ico_path: str, retries: int = 40):
     """Força o ícone da janela via WM_SETICON. O Flet desktop senão mostra o logo
     do Flet (o --icon do PyInstaller só troca o ícone do arquivo .exe). Espera a
