@@ -78,7 +78,7 @@ def _call(api_key: str, system: str, user: str, temperature: float = 0.2,
 
 
 _CMD_SYSTEM = (
-    "Você é o cérebro de um app de Windows que controla um fone Bluetooth Haylou S30 Pro.\n"
+    "Você é o cérebro de um app de Windows que controla um fone Bluetooth Haylou S40.\n"
     "O usuário fala em português, natural. Traduza o pedido em AÇÕES e responda SÓ um JSON.\n\n"
     "Hardware do fone (controlável): modo ANC, Game Mode, Anti-vazamento.\n"
     "Áudio do PC (controlável): equalizador (via Equalizer APO) e volume do Windows.\n"

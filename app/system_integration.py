@@ -9,7 +9,7 @@ import sys
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(os.environ.get("APPDATA", APP_DIR), "haylou-win", "config.json")
-ICON_PATH = os.path.join(APP_DIR, "assets", "s30.png")
+ICON_PATH = os.path.join(APP_DIR, "assets", "s40.png")
 
 # ─── Persistência (lembra último estado/EQ) ───
 def load_config() -> dict:
@@ -30,7 +30,7 @@ def save_config(cfg: dict):
 
 # ─── Instância única (impede abrir 2 cópias que brigam pela conexão BLE) ───
 _mutex_handle = None
-def acquire_single_instance(name: str = "HaylouS30ProWindowsApp_SingleInstance") -> bool:
+def acquire_single_instance(name: str = "HaylouS40WindowsApp_SingleInstance") -> bool:
     """True se esta é a 1ª instância; False se já existe outra rodando.
     Mutex nomeado do Windows (vive enquanto o processo viver). Em caso de falha
     na checagem, retorna True pra não travar o app injustamente."""
@@ -47,7 +47,7 @@ def acquire_single_instance(name: str = "HaylouS30ProWindowsApp_SingleInstance")
     except Exception:
         return True
 
-def focus_existing_window(title: str = "Haylou S30 Pro") -> bool:
+def focus_existing_window(title: str = "Haylou S40") -> bool:
     """Traz a janela da instância já aberta pra frente (em vez de abrir outra)."""
     try:
         import ctypes
@@ -171,7 +171,7 @@ def _tray_title(get_mode, get_batt):
     mode = TRAY_MODE_NAMES.get(get_mode(), "")
     batt = get_batt() if get_batt else None
     suffix = f" · {batt}%" if isinstance(batt, int) else ""
-    return f"Haylou S30 Pro — {mode}{suffix}"
+    return f"Haylou S40 — {mode}{suffix}"
 
 def make_tray(on_show, on_anc, on_transp, on_normal, on_quit, get_mode=lambda: 1,
               get_batt=None, on_cycle=None):
@@ -211,17 +211,17 @@ def update_tray_mode(icon, mode: int, get_mode=None, get_batt=None):
         if get_mode:
             icon.title = _tray_title(get_mode, get_batt)
         else:
-            icon.title = f"Haylou S30 Pro — {TRAY_MODE_NAMES.get(mode, '')}"
+            icon.title = f"Haylou S40 — {TRAY_MODE_NAMES.get(mode, '')}"
         icon.update_menu()
     except Exception:
         pass
 
 # ─── Ícone da janela (titlebar + taskbar) ───
-def set_app_user_model_id(app_id: str = "RevoluteDigital.HaylouS30Pro"):
+def set_app_user_model_id(app_id: str = "RevoluteDigital.HaylouS40"):
     """Define o AppUserModelID do processo. Sem isso o Windows agrupa o app pelo
     processo do Flet e mostra o ícone genérico do Flet na BARRA DE TAREFAS (mesmo
     com o ícone da janela já trocado). Com um ID próprio, a taskbar usa o ícone
-    da janela (s30.ico). Tem que ser chamado ANTES da janela aparecer."""
+    da janela (s40.ico). Tem que ser chamado ANTES da janela aparecer."""
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
@@ -284,7 +284,7 @@ def set_window_icon(title: str, ico_path: str, retries: int = 40):
 def get_startup_path() -> str:
     appdata = os.environ.get("APPDATA", "")
     return os.path.join(appdata, "Microsoft", "Windows", "Start Menu",
-                        "Programs", "Startup", "Haylou S30.lnk")
+                        "Programs", "Startup", "Haylou S40.lnk")
 
 def _autostart_target():
     """Decide pra onde o atalho de boot aponta. Prioriza o .exe (app de verdade,
@@ -295,8 +295,8 @@ def _autostart_target():
     Retorna (target_path, arguments, working_dir)."""
     if getattr(sys, "frozen", False):
         return sys.executable, "", os.path.dirname(sys.executable)
-    # onedir: o exe fica em dist\Haylou S30 Pro\Haylou S30 Pro.exe
-    built_exe = os.path.join(APP_DIR, "dist", "Haylou S30 Pro", "Haylou S30 Pro.exe")
+    # onedir: o exe fica em dist\Haylou S40\Haylou S40.exe
+    built_exe = os.path.join(APP_DIR, "dist", "Haylou S40", "Haylou S40.exe")
     if os.path.exists(built_exe):
         return built_exe, "", os.path.dirname(built_exe)
     pyw = sys.executable.replace("python.exe", "pythonw.exe")

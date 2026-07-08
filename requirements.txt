@@ -1,9 +1,8 @@
-# Haylou S30 Pro — Windows app dependencies (Python 3.10 on Windows).
+# Haylou S40 — Windows control app dependencies (Python 3.10+ on Windows).
 # Pinned for reproducible CI builds (the artifact CI signs must be deterministic).
 flet==0.85.1            # Flutter-powered desktop UI
 flet-desktop==0.85.1    # bundled Flutter desktop client
-bleak==3.0.2            # Bluetooth Low Energy (talks to the earbuds)
-bleak-winrt==1.2.0
+# S40 usa Classic BT RFCOMM via socket.AF_BTH nativo do Windows — bleak removido
 pycaw==20251023         # Windows volume control
 comtypes==1.4.16        # COM bridge for pycaw
 pystray==0.19.5         # system tray icon
@@ -11,14 +10,10 @@ pillow==12.2.0          # tray icon + app icon rendering
 keyboard==0.13.5        # global hotkey (Ctrl+Alt+A)
 win10toast-click==0.1.2 # low-battery toast notifications
 
-# WinRT — now-playing (SMTC) + BLE backend. The specific namespace packages are
-# required; the bare `winrt` metapackage does NOT pull these in.
+# WinRT — now-playing (SMTC) + device enumeration (discovery do S40).
+# The specific namespace packages are required; the bare `winrt` metapackage does NOT pull these in.
 winrt-runtime==3.2.1
-winrt-Windows.Devices.Bluetooth==3.2.1
-winrt-Windows.Devices.Bluetooth.Advertisement==3.2.1
-winrt-Windows.Devices.Bluetooth.GenericAttributeProfile==3.2.1
 winrt-Windows.Devices.Enumeration==3.2.1
-winrt-Windows.Devices.Radios==3.2.1
 winrt-Windows.Foundation==3.2.1
 winrt-Windows.Foundation.Collections==3.2.1
 winrt-Windows.Media.Control==3.2.1

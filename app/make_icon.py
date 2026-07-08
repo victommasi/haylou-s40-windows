@@ -1,5 +1,5 @@
 """Rasteriza o logomark (mesmo design de assets/icon.svg) em PNG + ICO via Pillow.
-Sem dependência de renderizador SVG. Gera icon.png, icon.ico e sobrescreve s30.ico
+Sem dependência de renderizador SVG. Gera icon.png, icon.ico e sobrescreve s40.ico
 (usado pelo build_exe.ps1 como --icon do .exe)."""
 import os, math
 from PIL import Image, ImageDraw
@@ -56,5 +56,5 @@ for (x, y) in (pts[0], pts[-1]):
 sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
 img.save(os.path.join(ASSETS, "icon.png"))
 img.save(os.path.join(ASSETS, "icon.ico"), sizes=sizes)
-img.save(os.path.join(ASSETS, "s30.ico"), sizes=sizes)  # build usa s30.ico
-print("OK: icon.png, icon.ico, s30.ico gerados em", ASSETS)
+img.save(os.path.join(ASSETS, "s40.ico"), sizes=sizes)  # build usa s40.ico
+print("OK: icon.png, icon.ico, s40.ico gerados em", ASSETS)

@@ -12,7 +12,7 @@ _lang = None  # "pt" | "en" — resolvido em set_lang()
 
 STRINGS = {
     # genéricos / topo
-    "app_name":        ("Haylou S30 Pro", "Haylou S30 Pro"),
+    "app_name":        ("Haylou S40", "Haylou S40"),
     "starting":        ("iniciando", "starting"),
     "connecting":      ("conectando", "connecting"),
     "connected":       ("conectado", "connected"),

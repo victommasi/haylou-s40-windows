@@ -1,11 +1,12 @@
 """
-Suite de testes do protocolo Haylou S30 Pro.
-Usa frames REAIS capturados do fone (ver docs/PROTOCOLO-REAL-S30.md).
+Suite de testes do protocolo Haylou S40.
+Usa frames capturados do fone (ver docs/PROTOCOLO-REAL-S40.md).
+TODO: substituir os frames de teste abaixo pelos frames reais do S40 após captura.
 Roda: python -m pytest test_protocol.py -v   (ou python test_protocol.py)
 """
 import haylou_protocol as p
 
-# Frames reais capturados ao vivo do S30 Pro
+# Frames do S30 Pro — substituir pelos frames reais do S40 após captura BLE
 REPORT_ANC_BATT90 = bytes.fromhex("aabbccc00e000d0002055a020801020900020a01ddeeff")  # ANC, bat 90%
 REPORT_TRANSP     = bytes.fromhex("aabbccc00e000d0002055a020800020900020a01ddeeff")  # campo08=00
 GET_ANC_RESP      = bytes.fromhex("aabbcc000900050009020901ddeeff")                   # modo ANC (02 09 01)

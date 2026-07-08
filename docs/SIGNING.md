@@ -11,7 +11,7 @@ This repo is already wired for it — you just need to apply and paste 4 values.
 ## One-time setup
 
 1. **Apply** at https://signpath.org/apply with this repository
-   (`revolutedigital/haylou-s30-pro-windows`, MIT, public). Approval is manual and free.
+   (`revolutedigital/haylou-s40-windows`, MIT, public). Approval is manual and free.
 
 2. After approval, in the **SignPath** dashboard:
    - Install the **SignPath GitHub App** on this repository.

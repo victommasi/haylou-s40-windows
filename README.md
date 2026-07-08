@@ -86,11 +86,9 @@ Python · [Flet](https://flet.dev) (Flutter-powered UI) · `socket.AF_BTH` (nati
 
 Local-first by design. The app has **no analytics, no telemetry, no account, no server**. Everything — earbud control, battery, EQ, themes, AUTO learning — runs fully offline. Usage patterns (which mode you pick, per app + time of day) are stored only in `%APPDATA%\haylou-win\` as plain counts — no window titles, no audio, no text.
 
-## 💼 Custom apps on demand
+## Credits
 
-I build **custom desktop, web and automation apps on demand** (reverse-engineering, hardware integrations, internal tools, AI). Need something like this for your product or company?
-
-**📱 WhatsApp: [+55 15 99166-9729](https://wa.me/5515991669729)** — Igor Silveira
+Forked from the original work by **[Igor Silveira (@revolutedigital)](https://github.com/revolutedigital)**, who built the S30 Pro Windows app that this project is based on. The UI architecture, system integration layer and most of the application skeleton come from his work.
 
 ## Disclaimer
 
@@ -137,11 +135,9 @@ Este é um app **independente pra Windows** que fala direto com o **Haylou S40**
 
 **"O Windows protegeu o seu PC"?** O app não é assinado (certificado custa caro pra um projeto grátis), então o SmartScreen avisa. Pra rodar: **Mais informações → Executar assim mesmo**.
 
-## 💼 Aplicativos sob encomenda
+## Créditos
 
-Eu desenvolvo **apps desktop, web e automações sob encomenda** (engenharia reversa, integração com hardware, ferramentas internas, IA). Precisa de algo assim pro seu produto ou empresa?
-
-**📱 WhatsApp: [+55 15 99166-9729](https://wa.me/5515991669729)** — Igor Silveira
+Derivado do trabalho original de **[Igor Silveira (@revolutedigital)](https://github.com/revolutedigital)**, autor do app Windows para o S30 Pro do qual este projeto faz fork. A arquitetura de UI, a camada de integração com o sistema e o esqueleto da aplicação vêm do trabalho dele.
 
 ## Aviso
 

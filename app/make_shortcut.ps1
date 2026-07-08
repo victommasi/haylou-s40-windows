@@ -10,11 +10,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $ExePath) { $ExePath = Join-Path $PSScriptRoot "dist\Haylou S30 Pro\Haylou S30 Pro.exe" }
-if (-not $IcoPath) { $IcoPath = Join-Path $PSScriptRoot "assets\s30.ico" }
-if (-not $LnkPath) { $LnkPath = Join-Path (Split-Path $ExePath) "Haylou S30 Pro.lnk" }
+if (-not $ExePath) { $ExePath = Join-Path $PSScriptRoot "dist\Haylou S40\Haylou S40.exe" }
+if (-not $IcoPath) { $IcoPath = Join-Path $PSScriptRoot "assets\s40.ico" }
+if (-not $LnkPath) { $LnkPath = Join-Path (Split-Path $ExePath) "Haylou S40.lnk" }
 
-$APPID = "RevoluteDigital.HaylouS30Pro"  # tem que bater com set_app_user_model_id() no código
+$APPID = "RevoluteDigital.HaylouS40"  # tem que bater com set_app_user_model_id() no código
 
 # 1) cria o atalho base
 $ws = New-Object -ComObject WScript.Shell
@@ -22,7 +22,7 @@ $lnk = $ws.CreateShortcut($LnkPath)
 $lnk.TargetPath = $ExePath
 $lnk.WorkingDirectory = Split-Path $ExePath
 if (Test-Path $IcoPath) { $lnk.IconLocation = "$IcoPath,0" }
-$lnk.Description = "Haylou S30 Pro"
+$lnk.Description = "Haylou S40"
 $lnk.Save()
 
 # O AppUserModelID é setado pelo PRÓPRIO app em runtime (set_app_user_model_id),
