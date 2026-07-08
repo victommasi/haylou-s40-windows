@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-Haylou S30 Pro — Central de Mídia (Windows).
-Controle ANC + Game Mode + mídia + volume, com visual premium (Flet).
-Conexão BLE persistente, funciona com áudio conectado.
-Protocolo reverso-engenheirado do app Haylou Sound v1.5.3 (ver docs/).
+Haylou S40 — Central de Mídia (Windows).
+Controle ANC + Multipoint + Game Mode + mídia + volume, com visual premium (Flet).
+Conexão Classic Bluetooth RFCOMM (canal 10), protocolo reverso-engenheirado.
+Transporte RFCOMM confirmado via HCI snoop 2026-07-08 (ver docs/PROTOCOLO-REAL-S40.md).
 """
-import asyncio
 import threading
 import queue
+import socket as _socket
 import time
 import os
 import sys
 import flet as ft
-from bleak import BleakClient, BleakScanner
-from bleak.backends.device import BLEDevice
 import winmedia as wm
 import haylou_protocol as proto
 import context_engine as ce
@@ -24,12 +22,11 @@ import updater
 import i18n
 from i18n import t
 
-CF_WRITE  = "0000cf05-0000-1000-8000-00805f9b34fb"
-CF_NOTIFY = "0000cf06-0000-1000-8000-00805f9b34fb"
-ADDR_HINTS = ("BB:AD:EE",)  # OUI da Haylou — usado pra achar o fone no scan
-# vazio = procura qualquer fone Haylou no scan. O endereço real do SEU fone é
-# descoberto e salvo no config.json na 1ª conexão (não vem chumbado no código).
-KNOWN_ADDR = ""
+# Confirmados via HCI snoop 2026-07-08 (docs/PROTOCOLO-REAL-S40.md)
+_AF_BTH          = 32        # Windows: AddressFamily.AF_BTH (Classic BT)
+_BTHPROTO_RFCOMM = 3         # Windows: RFCOMM protocol
+_CTRL_CHANNEL    = 10        # S40 proprietary control channel (RFCOMM DLCI=0x14)
+_ADDR_OUI        = "24:b2:31"  # S40 MAC OUI (confirmed: 24:B2:31:xx:xx:xx)
 
 def _asset(name: str) -> str:
     """Caminho de um asset, funcionando em dev E dentro do .exe (PyInstaller _MEIPASS)."""
@@ -67,13 +64,16 @@ def apply_palette(name: str):
 apply_palette("dark")  # default no import; main() reaplica conforme o config
 
 # chave i18n por modo (nome e descrição traduzidos na hora do acesso)
-_MODE_KEY  = {0: "normal", 1: "anc", 2: "transparency"}
-_MODE_DESC = {0: "normal_desc", 1: "anc_desc", 2: "transp_desc"}
+# Modo 4 = "ANC+" — observado na captura (S40 tem ANC adaptativo ou nível extra)
+_MODE_KEY  = {0: "normal", 1: "anc", 2: "transparency", 4: "anc"}
+_MODE_DESC = {0: "normal_desc", 1: "anc_desc", 2: "transp_desc", 4: "anc_desc"}
 
 class _ModeNames:
     """dict-like: MODE_NAMES[m] devolve o nome do modo traduzido no idioma atual."""
-    def __getitem__(self, m): return t(_MODE_KEY.get(m, "anc"))
-    def get(self, m, default=""): return t(_MODE_KEY[m]) if m in _MODE_KEY else default
+    def __getitem__(self, m):
+        if m == 4: return "ANC+"
+        return t(_MODE_KEY.get(m, "anc"))
+    def get(self, m, default=""): return self[m] if m in _MODE_KEY else default
 MODE_NAMES = _ModeNames()
 
 def anc_modes():
@@ -82,183 +82,250 @@ def anc_modes():
         (t("anc"),          1, T.ANC,    ft.Icons.NOISE_CONTROL_OFF, t("anc_desc")),
         (t("transparency"), 2, T.TRANSP, ft.Icons.HEARING,           t("transp_desc")),
         (t("normal"),       0, T.NORMAL, ft.Icons.MUSIC_NOTE,        t("normal_desc")),
+        ("ANC+",            4, T.ANC,    ft.Icons.GRAPHIC_EQ,        t("anc_desc")),
     ]
-MODE_COLOR = {1:T.ANC, 2:T.TRANSP, 0:T.NORMAL}
-MODE_ICON  = {1:ft.Icons.NOISE_CONTROL_OFF, 2:ft.Icons.HEARING, 0:ft.Icons.MUSIC_NOTE}
+MODE_COLOR = {1:T.ANC, 2:T.TRANSP, 0:T.NORMAL, 4:T.ANC}
+MODE_ICON  = {1:ft.Icons.NOISE_CONTROL_OFF, 2:ft.Icons.HEARING,
+              0:ft.Icons.MUSIC_NOTE,        4:ft.Icons.GRAPHIC_EQ}
 
 GET_BATTERY = proto.build_get_battery()
-GET_ANC = proto.build_get_anc()
 
-# ═══════════════════ BLE WORKER (lógica testada — inalterada) ═══════════════════
-class BleWorker:
-    def __init__(self, on_status, on_batt, on_mode=None, on_game=None, on_leak=None,
-                 addr=None, on_device=None):
+# ═══════════════════ RFCOMM WORKER (Classic BT — Haylou S40) ═══════════════════
+class RfcommWorker:
+    """Classic Bluetooth RFCOMM worker for Haylou S40.
+    Drop-in replacement for the former BleWorker; same send()/callback interface.
+    Transport: socket.AF_BTH / RFCOMM channel 10 (confirmed via HCI snoop).
+    Runs a cmd-loop thread + a recv-loop thread (no asyncio needed)."""
+
+    def __init__(self, on_status, on_batt, on_mode=None, on_game=None,
+                 on_multi=None, on_wind=None, addr=None, on_device=None):
         self.q = queue.Queue()
-        self.on_status = on_status; self.on_batt = on_batt
-        self.on_mode = on_mode; self.on_game = on_game; self.on_leak = on_leak
-        self.addr = addr or KNOWN_ADDR   # multi-fone: endereço alvo (config ou default)
-        self.on_device = on_device       # callback(addr, name) ao achar/lembrar o fone
-        self.client = None
-        self._valid_seen = False         # já recebeu algum frame que o protocolo reconhece?
-        threading.Thread(target=lambda: asyncio.run(self._loop()), daemon=True).start()
+        self.on_status = on_status
+        self.on_batt = on_batt
+        self.on_mode = on_mode
+        self.on_game = on_game
+        self.on_multi = on_multi
+        self.on_wind = on_wind
+        self.addr = addr
+        self.on_device = on_device
+        self._sock = None
+        self._valid_seen = False
+        threading.Thread(target=self._cmd_loop, daemon=True).start()
 
-    def send(self, kind, value=None): self.q.put((kind, value))
+    def send(self, kind, value=None):
+        self.q.put((kind, value))
 
-    def _has_control_service(self) -> bool:
-        """True se a tabela GATT atual expõe o serviço de controle (cf00/cf06).
-        Às vezes o fone conecta mas só publica os serviços genéricos (1800/180a) —
-        estado 'capado' que acontece quando ele fica ocioso ou disputa o canal com
-        outro host. Nesse estado o controle ANC não funciona, então tratamos como
-        NÃO-conectado e reconectamos, em vez de ficar mudo."""
+    # ── device discovery via WinRT ──────────────────────────────────────
+    def _find_device(self) -> "str | None":
+        """Enumerate paired Classic BT devices; return S40 MAC or None."""
         try:
-            for svc in self.client.services:
-                if svc.uuid.lower().startswith("0000cf06") or svc.uuid.lower().startswith("0000cf00"):
-                    return True
-                for ch in svc.characteristics:
-                    if ch.uuid.lower() == CF_NOTIFY:
-                        return True
+            import asyncio
+            from winsdk.windows.devices.enumeration import (
+                DeviceInformation, DeviceInformationKind)
+
+            async def _scan():
+                selector = (
+                    "System.Devices.Aep.ProtocolId:="
+                    "\"{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}\""
+                )
+                devs = await DeviceInformation.find_all_async(
+                    selector, [], DeviceInformationKind.ASSOCIATION_ENDPOINT)
+                for d in devs:
+                    name = d.name or ""
+                    dev_id = d.id or ""
+                    mac = dev_id.split("-")[-1].lower() if "-" in dev_id else ""
+                    if "HAYLOU S40" in name or mac.startswith(_ADDR_OUI):
+                        return mac or None
+                return None
+
+            return asyncio.run(_scan())
         except Exception:
-            return False
-        return False
+            return None
 
-    async def _try_client(self, ble_device, timeout: float, force_fresh: bool = False) -> bool:
-        """Conecta num BLEDevice e SÓ considera sucesso se o serviço de controle
-        aparecer. force_fresh ignora o cache de serviços do Windows (que pode ter
-        guardado uma tabela capada antiga)."""
-        winrt = {"use_cached_services": False} if force_fresh else {}
-        self.client = BleakClient(ble_device, timeout=timeout, winrt=winrt)
-        await self.client.connect()
-        if not self.client.is_connected:
-            return False
-        if not self._has_control_service():
-            # conectou mas veio capado — desconecta pra forçar nova descoberta depois
-            try: await self.client.disconnect()
-            except Exception: pass
-            self.client = None
-            return False
-        await self.client.start_notify(CF_NOTIFY, self._notify)
-        return True
-
-    async def _connect(self):
-        if self.client and self.client.is_connected and self._has_control_service():
+    # ── connection ───────────────────────────────────────────────────────
+    def _connect(self) -> bool:
+        if self._sock:
             return True
         self.on_status(t("connecting"), T.WARN)
-        # 1) endereço conhecido. Passa BLEDevice (não string): no Windows o fone não
-        #    anuncia BLE já-conectado-como-áudio; bleak 3.x com string faz um scan que
-        #    falha. Com BLEDevice conecta direto via from_bluetooth_address.
-        #    Tenta com cache; se vier capado (sem cf00/cf06), retenta forçando
-        #    re-descoberta sem cache (o cache do Windows às vezes guarda tabela velha).
-        if self.addr:
-            for force_fresh in (False, True):
+        if not self.addr:
+            self.addr = self._find_device()
+            if not self.addr:
+                self.on_status(t("not_found"), T.ANC)
+                return False
+            if self.on_device:
                 try:
-                    if await self._try_client(BLEDevice(self.addr, "HAYLOU S30", None),
-                                              timeout=8.0, force_fresh=force_fresh):
-                        self.on_status(t("connected"), T.OK); return True
-                except Exception: pass
-        # fallback: escaneia e conecta no 1º fone Haylou (e lembra o endereço).
+                    self.on_device(self.addr, "HAYLOU S40")
+                except Exception:
+                    pass
         try:
-            for d in await BleakScanner.discover(timeout=4.0):
-                if d.address.upper().startswith(ADDR_HINTS):
-                    try:
-                        if await self._try_client(d, timeout=6.0):
-                            self.addr = d.address
-                            if self.on_device:
-                                try: self.on_device(d.address, getattr(d, "name", None))
-                                except Exception: pass
-                            self.on_status(t("connected"), T.OK); return True
-                    except Exception: pass
-        except Exception: pass
-        # chegou aqui = ou offline, ou no estado capado. Mensagem acionável: cobre
-        # tanto a 1ª conexão (fone desligado/longe) quanto o estado travado.
-        self.on_status(t("not_found"), T.ANC); return False
+            s = _socket.socket(_AF_BTH, _socket.SOCK_STREAM, _BTHPROTO_RFCOMM)
+            s.settimeout(10.0)
+            s.connect((self.addr.upper(), _CTRL_CHANNEL))
+            s.settimeout(None)
+            self._sock = s
+            self._valid_seen = False
+            threading.Thread(target=self._recv_loop, daemon=True).start()
+            self.on_status(t("connected"), T.OK)
+            return True
+        except Exception:
+            self._sock = None
+            self.on_status(t("not_found"), T.ANC)
+            return False
 
-    def _notify(self, _, data):
-        b = bytes(data)
-        pct = proto.parse_battery(b)
-        if pct is not None: self.on_batt(pct); self._valid_seen = True
+    def _close(self):
+        s, self._sock = self._sock, None
+        try:
+            if s:
+                s.close()
+        except Exception:
+            pass
+
+    # ── receive loop (background thread) ────────────────────────────────
+    _HDR = bytes([0xAA, 0xBB, 0xCC])
+    _FTR = bytes([0xDD, 0xEE, 0xFF])
+
+    def _recv_loop(self):
+        buf = b""
+        try:
+            while True:
+                s = self._sock
+                if not s:
+                    break
+                try:
+                    chunk = s.recv(512)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                while True:
+                    h = buf.find(self._HDR)
+                    if h < 0:
+                        buf = b""
+                        break
+                    f = buf.find(self._FTR, h + 3)
+                    if f < 0:
+                        buf = buf[h:]
+                        break
+                    self._dispatch(buf[h: f + 3])
+                    buf = buf[f + 3:]
+        except Exception:
+            pass
+        self._sock = None
+        self.on_status(t("reconnecting"), T.WARN)
+        self.q.put(("reconnect", None))
+
+    def _dispatch(self, frame: bytes):
+        pct = proto.parse_battery(frame)
+        if pct is not None:
+            self.on_batt(pct)
+            self._valid_seen = True
         if self.on_mode:
-            m = proto.parse_anc_mode(b)
-            if m is not None: self.on_mode(m); self._valid_seen = True
+            m = proto.parse_anc_mode(frame)
+            if m is not None:
+                self.on_mode(m)
+                self._valid_seen = True
         if self.on_game:
-            g = proto.parse_game_mode(b)
-            if g is not None: self.on_game(g); self._valid_seen = True
-        if self.on_leak:
-            lk = proto.parse_attr(b, proto.ORD_LEAK)
-            if lk in (0, 1): self.on_leak(bool(lk)); self._valid_seen = True
+            g = proto.parse_game_mode(frame)
+            if g is not None:
+                self.on_game(g)
+                self._valid_seen = True
+        if self.on_multi:
+            mp = proto.parse_attr(frame, proto.ATTR_MULTI)
+            if mp in (0, 1):
+                self.on_multi(bool(mp))
+                self._valid_seen = True
+        if self.on_wind:
+            wd = proto.parse_attr(frame, proto.ORD_WIND)
+            if wd in (0, 1):
+                self.on_wind(bool(wd))
+                self._valid_seen = True
 
-    async def _compat_check(self):
-        """Resiliência de firmware: se conectou mas em ~8s nada do protocolo foi
-        reconhecido, avisa (firmware do fone provavelmente mudou) em vez de ficar
-        mudo. Não bloqueia nada — só informa."""
-        await asyncio.sleep(8)
-        if self.client and self.client.is_connected and not self._valid_seen:
+    # ── send helpers ─────────────────────────────────────────────────────
+    def _write(self, data: bytes):
+        try:
+            s = self._sock
+            if s:
+                s.sendall(data)
+        except Exception:
+            self._sock = None
+
+    def _poll_status(self):
+        self._write(proto.build_get_battery())
+        self._write(proto.build_get_all())
+
+    def _compat_check(self):
+        if self._sock and not self._valid_seen:
             self.on_status(t("proto_unknown"), T.WARN)
 
-    async def _poll_battery(self):
-        """Watchdog: pede status periodicamente E reconecta sozinho se a conexão
-        caiu ou ficou capada (cf00/cf06 sumiram). Assim o usuário não precisa mais
-        desligar/ligar o fone na mão — o app se recupera quando o fone volta."""
-        while True:
-            await asyncio.sleep(30)
-            self.q.put(("reconnect", None))
-            self.q.put(("status", None))
+    # ── command loop ─────────────────────────────────────────────────────
+    def _cmd_loop(self):
+        if self._connect():
+            self._poll_status()
+            threading.Timer(8, self._compat_check).start()
 
-    async def _loop(self):
-        await self._connect(); await self._status()
-        asyncio.create_task(self._poll_battery())
-        asyncio.create_task(self._compat_check())
         while True:
-            kind, value = await asyncio.get_event_loop().run_in_executor(None, self.q.get)
-            if kind == "quit": break
+            try:
+                kind, value = self.q.get(timeout=30)
+            except queue.Empty:
+                # periodic watchdog: poll battery or reconnect
+                if self._sock:
+                    self._poll_status()
+                elif self._connect():
+                    self._poll_status()
+                continue
+
+            if kind == "quit":
+                self._close()
+                break
             if kind == "reconnect":
-                # só re-tenta se realmente caiu/capou (não reconecta à toa)
-                if not (self.client and self.client.is_connected and self._has_control_service()):
-                    await self._connect()
+                if not self._sock and self._connect():
+                    self._poll_status()
                 continue
             if kind == "force_reconnect":
-                # botão "reconectar agora": derruba a conexão atual e refaz do zero
                 self.on_status(t("reconnecting"), T.WARN)
-                try:
-                    if self.client: await self.client.disconnect()
-                except Exception: pass
-                self.client = None
-                if await self._connect(): await self._status()
+                self._close()
+                if self._connect():
+                    self._poll_status()
                 continue
-            if not await self._connect(): continue
-            try:
-                if kind == "anc":
-                    await self.client.write_gatt_char(CF_WRITE, proto.build_set_anc(value), response=False)
-                    self.on_status(f"{MODE_NAMES[value]}", T.OK)
-                elif kind == "game":
-                    await self.client.write_gatt_char(CF_WRITE, proto.build_set_game(bool(value)), response=False)
-                    self.on_status(f"Game Mode {'ON' if value else 'OFF'}", T.OK)
-                elif kind == "leak":
-                    await self.client.write_gatt_char(CF_WRITE, proto.build_set_antileak(bool(value)), response=False)
-                    self.on_status(f"Anti-vazamento {'ON' if value else 'OFF'}", T.OK)
-                elif kind == "status":
-                    await self._status()
-            except Exception as e:
-                self.on_status(f"erro {type(e).__name__}", T.ANC)
-                try: await self.client.disconnect()
-                except Exception: pass
-                self.client = None
+            if kind == "status":
+                if self._connect():
+                    self._poll_status()
+                continue
 
-    async def _status(self):
-        try:
-            await self.client.write_gatt_char(CF_WRITE, GET_BATTERY, response=False)
-            await self.client.write_gatt_char(CF_WRITE, proto.build_get_all(), response=False)
-        except Exception: pass
+            if not self._connect():
+                continue
+
+            if kind == "anc":
+                self._write(proto.build_set_anc(value))
+                self.on_status(f"{MODE_NAMES[value]}", T.OK)
+            elif kind == "game":
+                self._write(proto.build_set_game(bool(value)))
+                self.on_status(f"Game Mode {'ON' if value else 'OFF'}", T.OK)
+            elif kind == "multi":
+                self._write(proto.build_set_multi(bool(value)))
+                self.on_status(f"Multipoint {'ON' if value else 'OFF'}", T.OK)
+            elif kind == "wind":
+                self._write(proto.build_set_wind(bool(value)))
+                self.on_status(f"Redução de vento {'ON' if value else 'OFF'}", T.OK)
+            elif kind == "eq_hw":
+                mode, data, label = value
+                if mode == "basic":
+                    self._write(proto.build_set_eq_preset(data))
+                elif mode == "market":
+                    self._write(proto.build_send_eq_market(data))
+                self.on_status(f"EQ: {label}", T.OK)
 
 
 # ═══════════════════ UI PREMIUM ═══════════════════
 def main(page: ft.Page):
     import os
     # define um AppUserModelID proprio ANTES da janela aparecer, pra a barra de
-    # tarefas usar o icone do app (s30.ico) em vez do icone generico do Flet.
+    # tarefas usar o icone do app (s40.ico) em vez do icone generico do Flet.
     sysint.set_app_user_model_id()
     # idioma: usa o salvo no config, senão autodetecta pelo Windows (pt/en)
     i18n.set_lang(sysint.load_config().get("lang"))
-    page.title = "Haylou S30 Pro"
+    page.title = "Haylou S40"
     page.window.width = 430
     page.window.height = 940  # alto o bastante pra mostrar até o now-playing sem cortar
     page.window.min_width = 400
@@ -273,14 +340,14 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO  # rola quando o conteúdo passa da altura da janela
     page.theme_mode = ft.ThemeMode.LIGHT if _theme == "light" else ft.ThemeMode.DARK
     page.fonts = {}
-    # ícone da janela/taskbar. s30.ico foi sobrescrito com o logo novo e vai embutido
-    # no .exe. page.window.icon não basta no Flet desktop → forçamos via WM_SETICON.
-    _ico = _asset("s30.ico")
+    # ícone da janela/taskbar. s40.ico vai embutido no .exe.
+    # page.window.icon não basta no Flet desktop → forçamos via WM_SETICON.
+    _ico = _asset("s40.ico")
     try:
         page.window.icon = _ico
     except Exception:
         pass
-    sysint.set_window_icon("Haylou S30 Pro", _ico)
+    sysint.set_window_icon("Haylou S40", _ico)
 
     state = {"mode": 1, "batt": None, "game": False, "auto": False, "last_auto": None,
              "ctx_app": ""}  # ctx_app = último app REAL em foco (ignora a janela do Haylou)
@@ -440,6 +507,8 @@ def main(page: ft.Page):
                 ft.Container(width=3, height=h, bgcolor=col, border_radius=1))
 
     # ─── Game Mode ───
+    # TODO (Phase 5): verificar via run-info (ORD_GAME) se o S40 suporta Game Mode.
+    # Se o S40 retornar 0xff para ORD_GAME, remover este switch e o handler on_game().
     game_switch = ft.Switch(value=False, active_color=T.OK, on_change=lambda e: on_game(e))
     def on_game(e):
         on = e.control.value
@@ -448,52 +517,92 @@ def main(page: ft.Page):
         set_status(t("game_on") if on else t("game_off"), T.WARN)
         worker.send("game", 1 if on else 0)
 
-    # ─── Anti-leak (hardware, confirmado) ───
-    leak_switch = ft.Switch(value=False, active_color=T.OK, on_change=lambda e: on_leak(e))
-    def on_leak(e):
+    # ─── Multipoint (2 dispositivos simultâneos) — CONFIRMADO S40 ───
+    multi_switch = ft.Switch(value=False, active_color=T.OK, on_change=lambda e: on_multi(e))
+    def on_multi(e):
         on = e.control.value
-        mark_touch("leak")
-        _persist("last_leak", on)
-        set_status(t("antileak_on") if on else t("antileak_off"), T.WARN)
-        worker.send("leak", 1 if on else 0)
+        mark_touch("multi")
+        _persist("last_multi", on)
+        set_status(f"Multipoint {'ON' if on else 'OFF'}", T.WARN)
+        worker.send("multi", 1 if on else 0)
+    def set_multi_from_device(on):
+        if is_locked("multi"): return
+        multi_switch.value = on
+        try: page.update()
+        except Exception: pass
 
-    # ─── EQ APO em CHIPS (software, supre o EQ que o fone não tem) ───
-    eq_names = list(wm.EQ_PROFILES.keys())
-    eq_state = {"sel": "Padrão"}
-    eq_chips = {}
-    def make_eq_chip(name):
+    # ─── Wind Reduction (attr=0x0C) — CONFIRMADO S40 ───
+    wind_switch = ft.Switch(value=False, active_color=T.OK, on_change=lambda e: on_wind(e))
+    def on_wind(e):
+        on = e.control.value
+        mark_touch("wind")
+        _persist("last_wind", on)
+        set_status(f"Redução de vento {'ON' if on else 'OFF'}", T.WARN)
+        worker.send("wind", 1 if on else 0)
+    def set_wind_from_device(on):
+        if is_locked("wind"): return
+        wind_switch.value = on
+        try: page.update()
+        except Exception: pass
+
+    # ─── EQ de HARDWARE (chips por preset) ─────────────────────────────────────
+    # Basic Sound: 5 presets via SET_CONFIG (opcode F2, configId=0x0007)
+    # Sound Market: 3 presets via opcode 0x12 (payload ASCII EQ paramétrico)
+    # Confirmados via captura HCI 2026-07-08
+    eq_hw_state = {"sel": "default"}
+    eq_hw_chips = {}  # id -> (container, accent_color)
+
+    def make_eq_hw_chip(preset_id, label, is_market=False):
+        accent = T.ANC if is_market else T.TRANSP
         c = ft.Container(
-            content=ft.Text(t(f"eq_{name}"), size=11, weight=ft.FontWeight.W_600, color=T.TXT,
+            content=ft.Text(label, size=11, weight=ft.FontWeight.W_600, color=T.TXT,
                             text_align=ft.TextAlign.CENTER),
             padding=ft.Padding.symmetric(vertical=6, horizontal=12),
             border_radius=T.R_PILL, bgcolor=T.SURFACE2,
             border=ft.Border.all(1, T.BORDER), ink=True,
-            on_click=lambda e, n=name: on_eq(n),
+            on_click=lambda e, pid=preset_id: on_eq_hw(pid),
             animate=ft.Animation(160, ft.AnimationCurve.EASE_OUT),
         )
-        eq_chips[name] = c
+        eq_hw_chips[preset_id] = (c, accent)
         return c
+
     def paint_eq():
-        for n, c in eq_chips.items():
-            on = (n == eq_state["sel"])
-            c.bgcolor = ft.Colors.with_opacity(0.16, T.TRANSP) if on else T.SURFACE2
-            c.border = ft.Border.all(1, T.TRANSP if on else T.BORDER)
-        page.update()
-    def on_eq(name):
-        eq_state["sel"] = name
-        ok = wm.set_eq_apo(name)
+        for pid, (c, accent) in eq_hw_chips.items():
+            on = (pid == eq_hw_state["sel"])
+            c.bgcolor = ft.Colors.with_opacity(0.16, accent) if on else T.SURFACE2
+            c.border = ft.Border.all(1, accent if on else T.BORDER)
+        try: page.update()
+        except Exception: pass
+
+    def on_eq_hw(preset_id):
+        eq_hw_state["sel"] = preset_id
         paint_eq()
-        set_status(t("eq_set", name=t(f"eq_{name}")) if ok else t("eq_unavailable"), T.OK if ok else T.ANC)
-        c = sysint.load_config(); c["eq"] = name; sysint.save_config(c)
-    eq_chips_row = ft.Row([make_eq_chip(n) for n in eq_names], wrap=True, spacing=5, run_spacing=5)
+        _persist("eq_hw", preset_id)
+        for pid, label, val in proto.EQ_BASIC_PRESETS:
+            if pid == preset_id:
+                worker.send("eq_hw", ("basic", val, label))
+                return
+        for pid, label, payload in proto.EQ_MARKET_PRESETS:
+            if pid == preset_id:
+                worker.send("eq_hw", ("market", payload, label))
+                return
+
+    eq_basic_row = ft.Row(
+        [make_eq_hw_chip(pid, label) for pid, label, _ in proto.EQ_BASIC_PRESETS],
+        wrap=True, spacing=5, run_spacing=5)
+    eq_market_row = ft.Row(
+        [make_eq_hw_chip(pid, label, is_market=True) for pid, label, _ in proto.EQ_MARKET_PRESETS],
+        wrap=True, spacing=5, run_spacing=5)
 
     # ─── Perfis de cenário: 1 clique aplica um combo (modo + game + EQ) ───
-    # Reaproveita on_anc/on_game/on_eq (não duplica lógica). EQ só aplica se existir o perfil.
+    # TODO (Phase 5): revisar SCENARIOS após confirmar quais features o S40 suporta.
+    # Remover "game" ou "eq" do dict se o S40 não tiver essas features no hardware.
+    # Reaproveita on_anc/on_game/on_eq_hw (não duplica lógica).
     SCENARIOS = [
-        ("sc_focus", ft.Icons.CENTER_FOCUS_STRONG, dict(anc=1, game=False, eq="Vocal")),
-        ("sc_game",  ft.Icons.SPORTS_ESPORTS,      dict(anc=0, game=True,  eq="Padrão")),
-        ("sc_music", ft.Icons.MUSIC_NOTE,          dict(anc=1, game=False, eq="Padrão")),
-        ("sc_call",  ft.Icons.HEADSET_MIC,         dict(anc=2, game=False, eq="Vocal")),
+        ("sc_focus", ft.Icons.CENTER_FOCUS_STRONG, dict(anc=1, game=False, eq_hw="soft")),
+        ("sc_game",  ft.Icons.SPORTS_ESPORTS,      dict(anc=0, game=True,  eq_hw="default")),
+        ("sc_music", ft.Icons.MUSIC_NOTE,          dict(anc=1, game=False, eq_hw="bass")),
+        ("sc_call",  ft.Icons.HEADSET_MIC,         dict(anc=2, game=False, eq_hw="default")),
     ]
     def apply_scenario(cfg):
         if cfg.get("anc") is not None:
@@ -502,8 +611,8 @@ def main(page: ft.Page):
             mark_touch("game"); game_switch.value = bool(cfg["game"])
             _persist("last_game", bool(cfg["game"]))
             worker.send("game", 1 if cfg["game"] else 0)
-        if cfg.get("eq") in wm.EQ_PROFILES:
-            on_eq(cfg["eq"])
+        if cfg.get("eq_hw"):
+            on_eq_hw(cfg["eq_hw"])
         try: page.update()
         except Exception: pass
     def make_scenario_chip(label_key, icon, cfg):
@@ -539,6 +648,34 @@ def main(page: ft.Page):
                 except Exception: pass
             time.sleep(0.32)
 
+    # botão play/pause — container com referência própria, content substituído a cada update
+    # (substituir .content por novo ft.Icon é mais confiável que mutar .name em Flet 0.85)
+    play_btn = ft.Container(
+        content=ft.Icon(ft.Icons.PLAY_ARROW, color=T.TXT, size=30),
+        width=48, height=48, border_radius=99, bgcolor=T.SURFACE2,
+        alignment=ft.Alignment(0, 0), ink=True,
+        animate_scale=ft.Animation(120, ft.AnimationCurve.EASE_OUT),
+    )
+
+    def _set_play_icon(playing: bool):
+        play_btn.content = ft.Icon(
+            ft.Icons.PAUSE if playing else ft.Icons.PLAY_ARROW,
+            color=T.TXT, size=30,
+        )
+        try: play_btn.update()
+        except Exception:
+            try: page.update()
+            except Exception: pass
+
+    def _on_play_pause():
+        """Toggle otimista: troca o ícone na hora, confirma pelo SMTC depois."""
+        np_playing["v"] = not np_playing["v"]
+        _set_play_icon(np_playing["v"])
+        wm.play_pause()
+        threading.Timer(0.7, refresh_now_playing).start()  # confirma pelo SMTC
+
+    play_btn.on_click = lambda e: _on_play_pause()
+
     def refresh_now_playing():
         try:
             ss = wm.get_now_playing()
@@ -554,9 +691,10 @@ def main(page: ft.Page):
                     b.bgcolor = T.OK if cur["playing"] else T.TXT_FAINT
                     if not cur["playing"]: b.height = 6
             else:
-                np_app.value = "—"; np_title.value = "nada tocando"
+                np_app.value = "—"; np_title.value = t("nothing_playing")
                 np_playing["v"] = False
                 for b in eq_bars: b.bgcolor = T.TXT_FAINT; b.height = 6
+            _set_play_icon(np_playing["v"])
             page.update()
         except Exception: pass
 
@@ -589,9 +727,17 @@ def main(page: ft.Page):
             vol_slider.value = v; vol_value.value = f"{v}%"
             try: page.update()
             except Exception: pass
+    _vol_last_send = {"t": 0.0}
     def on_vol_drag(e):
-        vol_state["dragging"] = time.time()  # marca: não re-sincronizar agora
-        vol_value.value = f"{int(e.control.value)}%"; page.update()
+        v = int(e.control.value)
+        vol_state["dragging"] = time.time()
+        vol_value.value = f"{v}%"
+        page.update()
+        # throttle: chama set_volume no máximo 25x/s, fora da thread de UI
+        now = time.time()
+        if now - _vol_last_send["t"] >= 0.04:
+            _vol_last_send["t"] = now
+            threading.Thread(target=wm.set_volume, args=(v,), daemon=True).start()
     vol_slider = ft.Slider(min=0, max=100, value=50, expand=True, active_color=T.TRANSP,
                            thumb_color=T.TXT, on_change=on_vol_drag,
                            on_change_end=lambda e: apply_volume(e.control.value))
@@ -707,14 +853,8 @@ def main(page: ft.Page):
         state["game"] = on; game_switch.value = on
         try: page.update()
         except Exception: pass
-    def set_leak_from_device(on):
-        if is_locked("leak"): return
-        leak_switch.value = on
-        try: page.update()
-        except Exception: pass
-
     # ─── LAYOUT ───
-    img_path = os.path.join(os.path.dirname(__file__), "assets", "s30.png")
+    img_path = os.path.join(os.path.dirname(__file__), "assets", "s40.png")
 
     def section(title, *content):
         return ft.Container(
@@ -864,12 +1004,12 @@ def main(page: ft.Page):
             actions=[ft.TextButton("OK", on_click=lambda ev: _close_dialog(dlg))],
         )
         _show_dialog(dlg)
-        try: sysint.notify("Haylou S30 Pro", body)
+        try: sysint.notify("Haylou S40", body)
         except Exception: pass
     lang_btn = ft.IconButton(ft.Icons.TRANSLATE, icon_size=18, icon_color=T.TXT_DIM,
                              tooltip=t("lang_tip"), on_click=toggle_lang)
 
-    # ─── botão reconectar (força nova conexão BLE na hora) ───
+    # ─── botão reconectar (força nova conexão RFCOMM na hora) ───
     def do_reconnect(e=None):
         set_status(t("reconnecting"), T.WARN)
         worker.send("force_reconnect")
@@ -926,7 +1066,7 @@ def main(page: ft.Page):
             ft.Row([
                 ft.Image(src=img_path, width=46, height=46, fit=ft.BoxFit.CONTAIN),
                 ft.Column([
-                    ft.Text("Haylou S30 Pro", size=16, weight=ft.FontWeight.W_800, color=T.TXT),
+                    ft.Text("Haylou S40", size=16, weight=ft.FontWeight.W_800, color=T.TXT),
                     ft.Row([status_dot, status_lbl], spacing=6, tight=True),
                 ], spacing=2, expand=True, tight=True),
                 ft.Column([
@@ -950,35 +1090,59 @@ def main(page: ft.Page):
             ft.Row([make_chip(n, m, c, i, d) for n, m, c, i, d in anc_modes()],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
 
-            # game mode
+            # controles do fone: Game Mode + Multipoint + Wind Reduction
             ft.Container(
-                content=ft.Row([
-                    ft.Row([ft.Icon(ft.Icons.SPORTS_ESPORTS, color=T.TXT_DIM, size=20),
-                            ft.Column([
-                                ft.Text(t("game_mode"), size=13, color=T.TXT, weight=ft.FontWeight.W_600),
-                                ft.Text(t("low_latency"), size=10, color=T.TXT_FAINT),
-                            ], spacing=0, tight=True)], spacing=12),
-                    game_switch,
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                content=ft.Column([
+                    ft.Row([
+                        ft.Row([ft.Icon(ft.Icons.SPORTS_ESPORTS, color=T.TXT_DIM, size=20),
+                                ft.Column([
+                                    ft.Text(t("game_mode"), size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                                    ft.Text(t("low_latency"), size=10, color=T.TXT_FAINT),
+                                ], spacing=0, tight=True)], spacing=12),
+                        game_switch,
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Divider(height=1, color=T.BORDER),
+                    ft.Row([
+                        ft.Row([ft.Icon(ft.Icons.DEVICE_HUB, color=T.TXT_DIM, size=20),
+                                ft.Column([
+                                    ft.Text("Multipoint", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                                    ft.Text("2 dispositivos simultâneos", size=10, color=T.TXT_FAINT),
+                                ], spacing=0, tight=True)], spacing=12),
+                        multi_switch,
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Divider(height=1, color=T.BORDER),
+                    ft.Row([
+                        ft.Row([ft.Icon(ft.Icons.AIR, color=T.TXT_DIM, size=20),
+                                ft.Column([
+                                    ft.Text("Redução de vento", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                                    ft.Text("Filtra ruído de vento no mic", size=10, color=T.TXT_FAINT),
+                                ], spacing=0, tight=True)], spacing=12),
+                        wind_switch,
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ], spacing=4),
                 padding=ft.Padding.symmetric(vertical=9, horizontal=14),
                 border_radius=T.R_CARD, bgcolor=T.SURFACE,
             ),
 
-            # ─── ÁUDIO DO PC (EQ + anti-leak + spatial) ───
-            section(t("audio"),
+            # ─── EQUALIZADOR DE HARDWARE ───
+            section("EQUALIZADOR",
                 ft.Column([
-                    ft.Text(t("pc_eq"), size=13, color=T.TXT, weight=ft.FontWeight.W_600),
-                    ft.Text(t("pc_eq_desc"), size=10, color=T.TXT_FAINT),
-                    eq_chips_row,
-                ], spacing=8, tight=True),
-                ft.Row([
-                    ft.Column([
-                        ft.Text(t("antileak"), size=13, color=T.TXT, weight=ft.FontWeight.W_600),
-                        ft.Text(t("antileak_desc"), size=10, color=T.TXT_FAINT),
-                    ], spacing=0, tight=True, expand=True),
-                    leak_switch,
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Row([
+                        ft.Icon(ft.Icons.GRAPHIC_EQ, color=T.TRANSP, size=16),
+                        ft.Text("Basic Sound", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                    ], spacing=8),
+                    ft.Text("5 presets de hardware integrados", size=10, color=T.TXT_FAINT),
+                    eq_basic_row,
+                ], spacing=6, tight=True),
+                ft.Divider(height=1, color=T.BORDER),
+                ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.TUNE, color=T.ANC, size=16),
+                        ft.Text("Sound Market", size=13, color=T.TXT, weight=ft.FontWeight.W_600),
+                    ], spacing=8),
+                    ft.Text("EQ paramétrico avançado", size=10, color=T.TXT_FAINT),
+                    eq_market_row,
+                ], spacing=6, tight=True),
                 ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.SURROUND_SOUND, color=T.TRANSP, size=18),
@@ -999,7 +1163,7 @@ def main(page: ft.Page):
                     ], spacing=10),
                     ft.Row([
                         media_btn(ft.Icons.SKIP_PREVIOUS, wm.prev_track),
-                        media_btn(ft.Icons.PLAY_ARROW, wm.play_pause, size=30, primary=True),
+                        play_btn,
                         media_btn(ft.Icons.SKIP_NEXT, wm.next_track),
                     ], alignment=ft.MainAxisAlignment.CENTER, spacing=14),
                     ft.Row([
@@ -1020,12 +1184,12 @@ def main(page: ft.Page):
     )
 
     page.add(root)
-    # restaura o ÚLTIMO estado salvo (modo/game/leak) — só visual. O fone confirma
-    # quando conectar; se estiver desconectado, o usuário vê o que deixou da última vez.
+    # restaura o ÚLTIMO estado salvo (modo/game/leak/multi) — só visual.
     _last_anc = cfg0.get("last_anc", 1)
-    state["mode"] = _last_anc if _last_anc in (0, 1, 2) else 1
+    state["mode"] = _last_anc if _last_anc in (0, 1, 2, 4) else 1
     game_switch.value = bool(cfg0.get("last_game", False))
-    leak_switch.value = bool(cfg0.get("last_leak", False))
+    multi_switch.value = bool(cfg0.get("last_multi", False))
+    wind_switch.value = bool(cfg0.get("last_wind", False))
     paint_hero(state["mode"]); paint_chips(state["mode"])
 
     # fade-in
@@ -1066,26 +1230,26 @@ def main(page: ft.Page):
         except Exception: pass
     threading.Thread(target=_check_update, daemon=True).start()
 
-    # ─── PERSISTÊNCIA: restaura último EQ salvo (chips já salvam no on_eq) ───
+    # ─── PERSISTÊNCIA: restaura último EQ de hardware salvo ───
     cfg = sysint.load_config()
-    if cfg.get("eq") in wm.EQ_PROFILES:
-        eq_state["sel"] = cfg["eq"]; wm.set_eq_apo(cfg["eq"]); paint_eq()
+    _saved_eq = cfg.get("eq_hw", "default")
+    _valid_eq_ids = {pid for pid, _, _ in proto.EQ_BASIC_PRESETS} | \
+                    {pid for pid, _, _ in proto.EQ_MARKET_PRESETS}
+    if _saved_eq in _valid_eq_ids:
+        eq_hw_state["sel"] = _saved_eq
+        paint_eq()
 
-    # watcher: se o Equalizer APO resetar o config por fora (troca de dispositivo,
-    # update), reaplica o perfil ativo sozinho
-    if wm.eq_apo_available():
-        wm.watch_eq_apo(lambda: eq_state["sel"],
-                        on_reapply=lambda n: set_status(f"EQ reaplicado: {n}", T.OK))
-
-    # BLE worker — endereço vem do config (multi-fone); lembra o fone ao conectar
+    # RFCOMM worker — endereço vem do config; descobre via WinRT na 1ª conexão
     def _save_device(addr, name):
         c = sysint.load_config(); c["device_addr"] = addr
         if name: c["device_name"] = name
         sysint.save_config(c)
     global worker
-    worker = BleWorker(set_status, set_batt, set_mode_from_device,
-                       set_game_from_device, set_leak_from_device,
-                       addr=cfg.get("device_addr"), on_device=_save_device)
+    worker = RfcommWorker(set_status, set_batt, set_mode_from_device,
+                          set_game_from_device,
+                          on_multi=set_multi_from_device,
+                          on_wind=set_wind_from_device,
+                          addr=cfg.get("device_addr"), on_device=_save_device)
 
     # ─── NOTIFICAÇÃO de bateria baixa: avisa 1x ao cruzar 20% (baixa) e 1x ao cruzar
     #     10% (crítica). Rearma quando recarrega acima de 30%. ───
@@ -1095,10 +1259,10 @@ def main(page: ft.Page):
         _orig_set_batt(pct)
         if pct <= 10 and not batt_warned["crit"]:
             batt_warned["crit"] = True; batt_warned["low"] = True
-            sysint.notify("Haylou S30 Pro", t("batt_crit", pct=pct))
+            sysint.notify("Haylou S40", t("batt_crit", pct=pct))
         elif pct <= 20 and not batt_warned["low"]:
             batt_warned["low"] = True
-            sysint.notify("Haylou S30 Pro", t("batt_low", pct=pct))
+            sysint.notify("Haylou S40", t("batt_low", pct=pct))
         elif pct > 30:
             batt_warned["low"] = False; batt_warned["crit"] = False
     worker.on_batt = set_batt  # reaponta pro wrapper
@@ -1134,7 +1298,7 @@ def main(page: ft.Page):
                 except Exception: pass
                 time.sleep(0.15)
             # traz pra frente via WinAPI (não depende do método async do Flet)
-            try: sysint.focus_existing_window("Haylou S30 Pro")
+            try: sysint.focus_existing_window("Haylou S40")
             except Exception: pass
         threading.Thread(target=_do, daemon=True).start()
     def quit_app():
@@ -1154,7 +1318,7 @@ def main(page: ft.Page):
         if not c.get("tray_hint_shown"):
             c["tray_hint_shown"] = True; sysint.save_config(c)
             try:
-                sysint.notify("Haylou S30 Pro",
+                sysint.notify("Haylou S40",
                               t("tray_hint") if i18n else "Continua rodando na bandeja. Clique no ícone pra abrir; botão direito → Sair.")
             except Exception: pass
     def _on_window_event(e):
@@ -1185,7 +1349,7 @@ if __name__ == "__main__":
     # trava de instância única: se já há uma janela aberta, foca ela e sai
     # (evita 2+ cópias brigando pela única conexão BLE)
     if not sysint.acquire_single_instance():
-        sysint.focus_existing_window("Haylou S30 Pro")
+        sysint.focus_existing_window("Haylou S40")
         sys.exit(0)
     try:
         ft.run(main)

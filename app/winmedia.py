@@ -122,8 +122,12 @@ def _app_friendly(app_id: str) -> str:
     return seg[0][:18] if seg else app_id[:18]
 
 async def _get_sessions_async():
-    from winrt.windows.media.control import \
-        GlobalSystemMediaTransportControlsSessionManager as Mgr
+    try:
+        from winsdk.windows.media.control import \
+            GlobalSystemMediaTransportControlsSessionManager as Mgr
+    except ImportError:
+        from winrt.windows.media.control import \
+            GlobalSystemMediaTransportControlsSessionManager as Mgr
     mgr = await Mgr.request_async()
     cur = mgr.get_current_session()
     sessions = list(mgr.get_sessions())
@@ -146,7 +150,7 @@ async def _get_sessions_async():
             pass
     return out
 
-# ─── EQ APO (equalização via software — supre o EQ que o S30 não tem) ───
+# ─── EQ APO (equalização via software — supre o EQ que o S40 não tem no hardware) ───
 import os as _os
 
 EQ_APO_CONFIG = r"C:\Program Files\EqualizerAPO\config\config.txt"
@@ -232,7 +236,7 @@ def watch_eq_apo(get_profile_name, interval: float = 4.0, on_reapply=None):
     t.start()
     return t
 
-# ─── Windows Spatial Sound (Windows Sonic — supre o spatial que o S30 não tem) ───
+# ─── Windows Spatial Sound (Windows Sonic — supre o spatial que o S40 não tem no hardware) ───
 def toggle_spatial_panel():
     """Abre o painel de som espacial do Windows (toggle manual mais confiável que via reg)."""
     try:

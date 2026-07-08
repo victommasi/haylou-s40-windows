@@ -8,8 +8,8 @@ import json
 import urllib.request
 import urllib.error
 
-APP_VERSION = "1.1.3"  # versão deste build (bater com a tag do release)
-REPO = "revolutedigital/haylou-s30-pro-windows"
+APP_VERSION = "1.1.0"  # versão deste build (bater com a tag do release)
+REPO = "revolutedigital/haylou-s40-windows"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
 _API = f"https://api.github.com/repos/{REPO}/releases/latest"
 
@@ -34,7 +34,7 @@ def check(timeout: float = 6.0):
     try:
         req = urllib.request.Request(_API, headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "haylou-s30-pro-windows",
+            "User-Agent": "haylou-s40-windows",
         })
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))

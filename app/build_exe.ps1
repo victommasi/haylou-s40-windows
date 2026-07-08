@@ -1,4 +1,4 @@
-# Packages Haylou S30 Pro into a single standalone .exe (no terminal, no Python needed).
+# Packages Haylou S40 into a single standalone .exe (no terminal, no Python needed).
 #
 #   powershell -ExecutionPolicy Bypass -File build_exe.ps1
 #   powershell -File build_exe.ps1 -Python "C:\path\to\python.exe"   # override interpreter
@@ -8,8 +8,9 @@
 #    in-project `build\` folder mid-build causes `FileNotFoundError: base_library.zip`.
 #  * Pass --add-data sources as ABSOLUTE paths, otherwise they resolve relative to the
 #    spec file (which lives in the temp workpath) and PyInstaller can't find the assets.
-#  * Use the Python that actually has the deps installed (flet/bleak/pycaw/winrt/...),
+#  * Use the Python that actually has the deps installed (flet/pycaw/winsdk/...),
 #    not a bare `python` stub on PATH.
+#  * Transport is Classic Bluetooth RFCOMM via socket.AF_BTH — no bleak needed at runtime.
 param([string]$Python = "")
 
 $ErrorActionPreference = 'Stop'
@@ -30,25 +31,23 @@ New-Item -ItemType Directory -Force $work | Out-Null
 
 # --onedir (NÃO --onefile): o exe + DLLs ficam numa pasta fixa. Sem descompactar no
 # temp (_MEI) a cada abertura → acaba o erro "Failed to load python310.dll" e o ícone
-# da taskbar fica estável. Distribui zipando a pasta dist\Haylou S30 Pro\.
+# da taskbar fica estável. Distribui zipando a pasta dist\Haylou S40\.
 Write-Host "Packaging with PyInstaller (--onedir, takes a few minutes)..." -ForegroundColor Yellow
 & $Python -m PyInstaller --noconfirm --clean --onedir --windowed `
-    --name "Haylou S30 Pro" `
+    --name "Haylou S40" `
     --workpath  $work `
     --specpath  $work `
     --distpath  "$app\dist" `
-    --icon      "$app\assets\s30.ico" `
-    --add-data  "$app\assets\s30.png;assets" `
-    --add-data  "$app\assets\s30.ico;assets" `
+    --icon      "$app\assets\s40.ico" `
+    --add-data  "$app\assets\s40.png;assets" `
+    --add-data  "$app\assets\s40.ico;assets" `
     --collect-all "flet" `
     --collect-all "flet_desktop" `
-    --collect-all "winrt" `
-    --collect-submodules "bleak" `
-    --hidden-import "winrt.windows.media.control" `
-    --hidden-import "winrt.windows.foundation" `
-    --hidden-import "winrt.windows.devices.bluetooth" `
-    --hidden-import "winrt.windows.devices.bluetooth.genericattributeprofile" `
-    --hidden-import "winrt.windows.devices.bluetooth.advertisement" `
+    --collect-all "winsdk" `
+    --hidden-import "winsdk.windows.media.control" `
+    --hidden-import "winsdk.windows.foundation" `
+    --hidden-import "winsdk.windows.devices.enumeration" `
+    --hidden-import "winsdk.windows.devices.bluetooth" `
     --hidden-import "comtypes" `
     --hidden-import "pycaw.pycaw" `
     --hidden-import "pystray._win32" `
@@ -57,10 +56,10 @@ Write-Host "Packaging with PyInstaller (--onedir, takes a few minutes)..." -Fore
     "$app\haylou_flet.py"
 
 Write-Host ""
-# no onedir o exe fica em dist\Haylou S30 Pro\Haylou S30 Pro.exe
-$exe = "$app\dist\Haylou S30 Pro\Haylou S30 Pro.exe"
+# no onedir o exe fica em dist\Haylou S40\Haylou S40.exe
+$exe = "$app\dist\Haylou S40\Haylou S40.exe"
 if (Test-Path $exe) {
-    $folder = "$app\dist\Haylou S30 Pro"
+    $folder = "$app\dist\Haylou S40"
     $sz = [math]::Round(((Get-ChildItem $folder -Recurse | Measure-Object Length -Sum).Sum) / 1MB, 1)
     Write-Host "APP created: $exe (pasta ~$sz MB)" -ForegroundColor Green
 } else {

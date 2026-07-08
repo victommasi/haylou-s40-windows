@@ -13,6 +13,12 @@ __pycache__/
 bruteforce-progress.txt
 *.tmp
 
+# ─── HCI snoop captures & Wireshark exports (grandes, só locais) ───
+export-s40-logs*.json
+export-s40-logs*.csv
+export-s40-logs*.txt
+docs/bugreport-*/
+
 # ─── Reverse-engineering INPUTS — NOT redistributable (Haylou copyrighted material) ───
 # These stay on the local machine only. Never publish the decompiled app or the APK.
 apk/

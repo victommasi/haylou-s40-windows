@@ -1,12 +1,13 @@
-# Haylou S30 Pro — Windows control app
+# Haylou S40 — Windows control app
 # Python 3.10+ on Windows. Install with:  pip install -r requirements.txt
 
 flet>=0.28           # UI (Flutter-based desktop)
-bleak>=0.21          # Bluetooth Low Energy (talks to the earbuds)
+# S40 usa Classic BT RFCOMM (não BLE): conexão via socket.AF_BTH nativo do Windows
+# Nenhuma lib BT extra necessária — socket e winsdk (abaixo) cobrem discovery+connect
 pycaw>=20240210      # Windows volume control
 comtypes>=1.2        # COM bridge (pycaw / audio endpoints)
-winrt>=1.0           # Windows Runtime — "now playing" (SMTC). On some setups this
-                     # ships as the 'winsdk' package; install that instead if 'winrt' fails.
+winsdk               # Windows Runtime — "now playing" (SMTC). (winrt>=1.0 was the old name,
+                     # incompatible with Python 3.13+; winsdk is the current replacement)
 pystray>=0.19        # system tray icon
 pillow>=10.0         # tray icon rendering (PIL)
 keyboard>=0.13       # global hotkey (Ctrl+Alt+A)
